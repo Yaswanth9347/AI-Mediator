@@ -57,11 +57,15 @@ export default function NewDispute() {
 
         try {
             const res = await createDispute(formData);
-            toast.success('Case created successfully! Please complete payment to file.');
-            
-            // Store dispute and show payment modal
-            setCreatedDispute(res.data);
-            setShowPaymentModal(true);
+            // ============ PAYMENT BYPASS FOR TESTING ============
+            // Skip payment modal and go directly to dispute page
+            toast.success('Case created and filed successfully!');
+            navigate(`/disputes/${res.data.id}`);
+            // ====================================================
+            // ORIGINAL CODE (uncomment to restore payment):
+            // toast.success('Case created successfully! Please complete payment to file.');
+            // setCreatedDispute(res.data);
+            // setShowPaymentModal(true);
             setLoading(false);
         } catch (error) {
             console.error(error);
@@ -231,7 +235,7 @@ export default function NewDispute() {
                                     Creating Dispute...
                                 </>
                             ) : (
-                                'Continue to Payment'
+                                'Submit Case'
                             )}
                         </button>
                     </form>

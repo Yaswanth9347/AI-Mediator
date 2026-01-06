@@ -14,14 +14,29 @@ export default function ProfilePictureUpload({ currentPicture, onUpdate }) {
         if (!file) return;
 
         // Validate file type
-        if (!file.type.startsWith('image/')) {
-            toast.error('Please select an image file');
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (!allowedTypes.includes(file.type)) {
+            toast.error('Invalid file type. Please upload a JPEG, PNG, or WebP image.');
+            e.target.value = ''; // Clear input
+            return;
+        }
+        
+        // Validate file extension (additional security)
+        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
+        const fileName = file.name.toLowerCase();
+        const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+        
+        if (!hasValidExtension) {
+            toast.error('Invalid file extension. Only .jpg, .jpeg, .png, or .webp files are allowed.');
+            e.target.value = ''; // Clear input
             return;
         }
 
-        // Validate file size (5MB max)
-        if (file.size > 5 * 1024 * 1024) {
-            toast.error('Image size must be less than 5MB');
+        // Validate file size (2MB max for profile pictures)
+        const maxSize = 2 * 1024 * 1024;
+        if (file.size > maxSize) {
+            toast.error(`Image too large. Maximum size is 2MB. Your file is ${(file.size / 1024 / 1024).toFixed(2)}MB.`);
+            e.target.value = ''; // Clear input
             return;
         }
 
@@ -43,7 +58,7 @@ export default function ProfilePictureUpload({ currentPicture, onUpdate }) {
             onUpdate && onUpdate(response.data.profilePicture);
         } catch (error) {
             console.error('Upload error:', error);
-            toast.error(error.response?.data?.error || 'Failed to upload profile picture');
+            toast.error(error.response?.data?.error || error.response?.data?.message || 'Failed to upload profile picture');
             setPreview(currentPicture);
         } finally {
             setUploading(false);

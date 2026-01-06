@@ -177,6 +177,7 @@ export const AuditCategories = {
     RESOLUTION: 'RESOLUTION',
     ADMIN: 'ADMIN',
     SYSTEM: 'SYSTEM',
+    PRIVACY: 'PRIVACY',
 };
 
 /**

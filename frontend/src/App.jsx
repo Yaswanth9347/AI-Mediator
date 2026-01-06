@@ -8,12 +8,14 @@ import LandingPage from './pages/LandingPage';
 import Profile from './pages/Profile';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import EmailVerification from './pages/EmailVerification';
 import AdminUsers from './pages/AdminUsers';
 import PaymentSuccess from './components/PaymentSuccess';
 import { Toaster } from 'react-hot-toast';
 import { Scale, LogOut, User, LayoutDashboard, FilePlus, ShieldCheck, Settings, Users } from 'lucide-react';
 import { SocketProvider } from './context/SocketContext';
 import ErrorBoundary from './components/ErrorBoundary';
+import NotificationBell from './components/NotificationBell';
 
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('token');
@@ -70,6 +72,7 @@ function Navbar() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <NotificationBell />
             <Link
               to="/profile"
               className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-3 py-1.5 rounded-full transition-colors"
@@ -109,6 +112,7 @@ function AppContent() {
           <Route path="/login" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password/:token" element={<ResetPassword />} />
+          <Route path="/verify-email/:token" element={<EmailVerification />} />
 
           <Route path="/dashboard" element={
             <ProtectedRoute>

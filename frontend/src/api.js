@@ -20,8 +20,25 @@ api.interceptors.response.use(
     (error) => {
         // Handle 401 errors - redirect to login
         if (error.response?.status === 401) {
-            localStorage.clear();
-            window.location.href = '/login';
+            const errorCode = error.response?.data?.code;
+            
+            // Clear local storage for any auth error
+            localStorage.removeItem('token');
+            localStorage.removeItem('role');
+            localStorage.removeItem('username');
+            
+            // Show appropriate message based on error code
+            if (errorCode === 'SESSION_INVALID') {
+                // Session was revoked or expired - show notification
+                sessionStorage.setItem('sessionExpiredMessage', 'Your session was ended. Please log in again.');
+            } else if (errorCode === 'TOKEN_EXPIRED') {
+                sessionStorage.setItem('sessionExpiredMessage', 'Your session has expired. Please log in again.');
+            }
+            
+            // Redirect to login if not already there
+            if (!window.location.pathname.includes('/login')) {
+                window.location.href = '/login';
+            }
             return Promise.reject(error);
         }
 
@@ -74,9 +91,13 @@ export const sendMessage = (id, formData) => api.post(`/disputes/${id}/messages`
 export const submitDecision = (id, choice) => api.post(`/disputes/${id}/decision`, { choice });
 export const requestReanalysis = (id) => api.post(`/disputes/${id}/request-reanalysis`);
 export const getMessageCount = (id) => api.get(`/disputes/${id}/message-count`);
+
+// Identity Verification APIs
 export const verifyIdentity = (formData) => api.post('/auth/verify', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
 });
+export const getVerificationStatus = () => api.get('/auth/verification-status');
+
 export const getStats = () => api.get('/stats');
 
 // User Profile APIs
@@ -96,10 +117,16 @@ export const deleteAccount = () => api.delete('/users/account');
 // Session Management APIs
 export const getActiveSessions = () => api.get('/users/sessions');
 export const revokeSession = (sessionId) => api.delete(`/users/sessions/${sessionId}`);
+export const revokeAllSessions = () => api.post('/users/sessions/revoke-all');
+export const logout = () => api.post('/auth/logout');
 
 // Password Reset APIs
 export const forgotPassword = (email) => api.post('/auth/forgot-password', { email });
 export const resetPassword = (token, newPassword) => api.post('/auth/reset-password', { token, newPassword });
+
+// Email Verification APIs
+export const verifyEmail = (token) => api.get(`/auth/verify-email/${token}`);
+export const resendVerificationEmail = (email) => api.post('/auth/resend-verification', { email });
 
 // Case History / Audit Trail
 export const getCaseHistory = (id) => api.get(`/disputes/${id}/history`);
@@ -109,7 +136,18 @@ export const uploadEvidence = (id, formData) => api.post(`/disputes/${id}/eviden
     headers: { 'Content-Type': 'multipart/form-data' },
 });
 export const getEvidence = (id) => api.get(`/disputes/${id}/evidence`);
+export const getEvidenceDetails = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}`);
 export const deleteEvidence = (disputeId, evidenceId) => api.delete(`/disputes/${disputeId}/evidence/${evidenceId}`);
+export const downloadEvidence = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}/download`, {
+    responseType: 'blob'
+});
+export const getEvidencePreviewUrl = (disputeId, evidenceId) => 
+    `http://localhost:5000/api/disputes/${disputeId}/evidence/${evidenceId}/preview`;
+
+// OCR APIs
+export const getEvidenceOcr = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}/ocr`);
+export const processEvidenceOcr = (disputeId, evidenceId) => api.post(`/disputes/${disputeId}/evidence/${evidenceId}/ocr`);
+export const processAllOcr = (disputeId) => api.post(`/disputes/${disputeId}/ocr/process-all`);
 
 // Notification APIs
 export const getNotifications = (params) => api.get('/notifications', { params });
@@ -145,5 +183,17 @@ export const enable2FA = () => api.post('/users/enable-2fa');
 export const verify2FA = (code) => api.post('/users/verify-2fa', { code });
 export const disable2FA = (password) => api.post('/users/disable-2fa', { password });
 export const getUserStatistics = () => api.get('/users/statistics');
+
+// PDF Report APIs
+export const downloadCaseSummaryReport = (disputeId) => api.get(`/disputes/${disputeId}/report/summary`, {
+    responseType: 'blob'
+});
+export const downloadAgreementPDF = (disputeId) => api.get(`/disputes/${disputeId}/report/agreement`, {
+    responseType: 'blob'
+});
+export const getAgreementPreviewUrl = (disputeId) => {
+    const token = localStorage.getItem('token');
+    return `http://localhost:5000/api/disputes/${disputeId}/report/agreement/preview?token=${encodeURIComponent(token)}`;
+};
 
 export default api;

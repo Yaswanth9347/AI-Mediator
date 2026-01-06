@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory } from '../api';
-import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown } from 'lucide-react';
+import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl } from '../api';
+import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown, File } from 'lucide-react';
 import SignatureCanvas from 'react-signature-canvas';
 import toast from 'react-hot-toast';
 import { useSocket } from '../context/SocketContext';
@@ -135,9 +135,52 @@ export default function DisputeDetail() {
             toast.success('Case has been accepted!');
         };
 
-        const handleAiReady = ({ solutions }) => {
-            setAiSolutions(solutions);
+        const handleAiReady = (data) => {
+            console.log('AI Ready event received:', data);
+            // Backend sends: { disputeId, status, aiSolutions }
+            if (data.aiSolutions) {
+                setAiSolutions(data.aiSolutions);
+            } else if (data.solutions) {
+                // Fallback for legacy format
+                setAiSolutions(data.solutions);
+            }
+            // Update dispute status to AwaitingDecision
+            if (data.status) {
+                setDispute(prev => prev ? { ...prev, status: data.status } : prev);
+            }
             toast.success('AI solutions are ready!');
+        };
+
+        // Handle dispute status changes
+        const handleStatusChanged = (data) => {
+            console.log('Dispute status changed:', data);
+            setDispute(prev => prev ? { 
+                ...prev, 
+                status: data.status,
+                resolutionStatus: data.resolutionStatus || prev?.resolutionStatus,
+                forwardedToCourt: data.forwardedToCourt || prev?.forwardedToCourt,
+                courtType: data.courtType || prev?.courtType
+            } : prev);
+            
+            if (data.status === 'Reanalyzing') {
+                setAiSolutions([]);
+                toast.info('AI is generating new solutions...');
+            } else if (data.status === 'ResolutionInProgress') {
+                toast.success('Agreement reached! Proceeding to resolution.');
+            } else if (data.status === 'ForwardedToCourt') {
+                toast.info(`Case forwarded to ${data.courtType} Court`);
+            }
+        };
+
+        // Handle vote recorded
+        const handleVoteRecorded = (data) => {
+            console.log('Vote recorded:', data);
+            setDispute(prev => prev ? {
+                ...prev,
+                plaintiffChoice: data.plaintiffChoice,
+                defendantChoice: data.defendantChoice
+            } : prev);
+            toast.info(`${data.voterRole === 'plaintiff' ? 'Plaintiff' : 'Defendant'} has voted`);
         };
 
         socket.on('message:new', handleNewMessage);
@@ -145,6 +188,8 @@ export default function DisputeDetail() {
         socket.on('user:stop-typing', handleStopTyping);
         socket.on('dispute:accepted', handleDisputeAccepted);
         socket.on('dispute:ai-ready', handleAiReady);
+        socket.on('dispute:status-changed', handleStatusChanged);
+        socket.on('dispute:vote-recorded', handleVoteRecorded);
 
         return () => {
             socket.off('message:new', handleNewMessage);
@@ -152,13 +197,23 @@ export default function DisputeDetail() {
             socket.off('user:stop-typing', handleStopTyping);
             socket.off('dispute:accepted', handleDisputeAccepted);
             socket.off('dispute:ai-ready', handleAiReady);
+            socket.off('dispute:status-changed', handleStatusChanged);
+            socket.off('dispute:vote-recorded', handleVoteRecorded);
         };
     }, [socket, currentUsername]);
 
-    // Auto-scroll removed as per user request
-    // useEffect(() => {
-    //     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    // }, [messages]);
+    // Auto-scroll to latest message when messages change
+    const scrollToBottom = () => {
+        // Use setTimeout to ensure DOM has updated before scrolling
+        setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+    };
+
+    // Scroll to bottom when messages array changes (new message added)
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages]);
 
     const handleSendMessage = async (e) => {
         e.preventDefault();
@@ -248,6 +303,61 @@ export default function DisputeDetail() {
         }
     };
 
+    // PDF Download Handlers
+    const handleDownloadCaseSummary = async () => {
+        try {
+            toast.loading('Generating case summary report...', { id: 'pdf-summary' });
+            const response = await downloadCaseSummaryReport(id);
+            const blob = new Blob([response.data], { type: 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `Case_Summary_${id}_${Date.now()}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            toast.success('Case summary downloaded!', { id: 'pdf-summary' });
+        } catch (err) {
+            toast.error('Failed to download case summary', { id: 'pdf-summary' });
+            console.error('PDF download error:', err);
+        }
+    };
+
+    const handleDownloadAgreement = async () => {
+        try {
+            toast.loading('Downloading settlement agreement...', { id: 'pdf-agreement' });
+            const response = await downloadAgreementPDF(id);
+            const blob = new Blob([response.data], { type: 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `Settlement_Agreement_Case_${id}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            toast.success('Settlement agreement downloaded!', { id: 'pdf-agreement' });
+        } catch (err) {
+            const errorMsg = err.response?.data?.error || 'Failed to download agreement';
+            toast.error(errorMsg, { id: 'pdf-agreement' });
+            console.error('Agreement download error:', err);
+        }
+    };
+
+    const handleViewAgreement = async () => {
+        try {
+            const res = await getAgreementPreviewUrl(id);
+            // API may return full URL or an object with data.url
+            const url = res?.data?.url || res;
+            if (!url) throw new Error('Preview URL not available');
+            window.open(url, '_blank');
+        } catch (err) {
+            console.error('View agreement error:', err);
+            toast.error('Failed to open agreement preview');
+        }
+    };
+
     // Show loading state
     if (loading || !dispute) {
         return (
@@ -281,6 +391,27 @@ export default function DisputeDetail() {
                                 </span>
                                 <span>ID: #{dispute.id}</span>
                                 <span>{new Date(dispute.createdAt).toLocaleDateString()}</span>
+                            </div>
+                        </div>
+                        {/* PDF Reports Dropdown */}
+                        <div className="relative">
+                            <div className="flex flex-col sm:flex-row gap-2">
+                                <button
+                                    onClick={handleDownloadCaseSummary}
+                                    className="inline-flex items-center px-4 py-2 bg-blue-600/20 text-blue-200 rounded hover:bg-blue-600/30 font-medium transition-colors border border-blue-600/30 text-sm"
+                                    title="Download a comprehensive summary of this case"
+                                >
+                                    <File className="w-4 h-4 mr-2" /> Case Summary
+                                </button>
+                                {dispute.agreementDocPath && (
+                                    <button
+                                        onClick={handleDownloadAgreement}
+                                        className="inline-flex items-center px-4 py-2 bg-green-600/20 text-green-200 rounded hover:bg-green-600/30 font-medium transition-colors border border-green-600/30 text-sm"
+                                        title="Download the settlement agreement PDF"
+                                    >
+                                        <Download className="w-4 h-4 mr-2" /> Agreement
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -374,7 +505,16 @@ export default function DisputeDetail() {
 
                 {/* Resolution Workflow Section */}
                 {(dispute.status === 'ResolutionInProgress' || dispute.status === 'PendingAdminApproval' || dispute.status === 'Resolved' || dispute.resolutionStatus !== 'None') && !dispute.forwardedToCourt && (
-                    <ResolutionSection dispute={dispute} isPlaintiff={isPlaintiff} isDefendant={isDefendant} isAdmin={isAdmin} onUpdate={updateDispute} />
+                    <ResolutionSection
+                        dispute={dispute}
+                        isPlaintiff={isPlaintiff}
+                        isDefendant={isDefendant}
+                        isAdmin={isAdmin}
+                        onUpdate={updateDispute}
+                        onViewAgreement={handleViewAgreement}
+                        onDownloadAgreement={handleDownloadAgreement}
+                        onDownloadCaseSummary={handleDownloadCaseSummary}
+                    />
                 )}
 
                 {/* AI Solutions Section: Show ONLY if NOT in resolution phase yet */}
@@ -572,7 +712,7 @@ export default function DisputeDetail() {
     );
 }
 
-function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdate }) {
+function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdate, onViewAgreement, onDownloadAgreement, onDownloadCaseSummary }) {
     const token = localStorage.getItem('token');
     const sigPad = useRef({});
     const [loading, setLoading] = useState(false);
@@ -613,14 +753,16 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
 
                             <div className="flex gap-4">
                                 {dispute.agreementDocPath && (
-                                    <a
-                                        href={`http://localhost:5000/uploads/${dispute.agreementDocPath}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
+                                    <button
+                                        onClick={() => {
+                                            const token = localStorage.getItem('token');
+                                            const url = `http://localhost:5000/api/disputes/${dispute.id}/report/agreement/preview?token=${encodeURIComponent(token)}`;
+                                            window.open(url, '_blank');
+                                        }}
                                         className="px-4 py-2 bg-slate-900/50 border border-blue-800 rounded text-blue-200 hover:bg-slate-800/50 flex items-center"
                                     >
                                         <FileText className="w-4 h-4 mr-2" /> View Draft PDF
-                                    </a>
+                                    </button>
                                 )}
                                 <button
                                     onClick={async () => {
@@ -803,21 +945,18 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
                                     
                                     {dispute.agreementDocPath && (
                                         <div className="flex gap-3">
-                                            <a
-                                                href={`http://localhost:5000/uploads/${dispute.agreementDocPath}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
+                                            <button
+                                                onClick={onViewAgreement}
                                                 className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium transition-colors"
                                             >
                                                 <FileText className="w-4 h-4 mr-2" /> View Settlement Agreement
-                                            </a>
-                                            <a
-                                                href={`http://localhost:5000/uploads/${dispute.agreementDocPath}`}
-                                                download={`Settlement_Agreement_Case_${dispute.id}.pdf`}
+                                            </button>
+                                            <button
+                                                onClick={onDownloadAgreement}
                                                 className="inline-flex items-center px-4 py-2 bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 font-medium transition-colors border border-green-500/30"
                                             >
                                                 <Download className="w-4 h-4 mr-2" /> Download PDF
-                                            </a>
+                                            </button>
                                         </div>
                                     )}
                                 </div>

@@ -4,14 +4,15 @@ import { toast } from 'react-hot-toast';
 import { 
     getUserProfile, updateUserProfile, changePassword, 
     getNotificationPreferences, updateNotificationPreferences,
-    getActiveSessions, revokeSession, exportUserData, deleteAccount,
+    getActiveSessions, revokeSession, revokeAllSessions, logout, exportUserData, deleteAccount,
     getMyDisputes
 } from '../api';
 import { 
     User, Mail, Lock, Save, Eye, EyeOff, CheckCircle, ShieldCheck, AlertTriangle,
     Bell, BellOff, Download, Trash2, Monitor, Smartphone, LogOut, Clock, 
     FileText, Scale, Activity, Settings, ChevronRight, Shield, Key,
-    AlertCircle, Globe, Calendar, MapPin, Briefcase, Phone, X, Loader2, Camera, BarChart3
+    AlertCircle, Globe, Calendar, MapPin, Briefcase, Phone, X, Loader2, Camera, BarChart3,
+    Laptop, Tablet, RefreshCw
 } from 'lucide-react';
 import ProfilePictureUpload from '../components/ProfilePictureUpload';
 import ActivityLog from '../components/ActivityLog';
@@ -133,17 +134,8 @@ export default function Profile() {
             setSessions(res.data?.sessions || []);
         } catch (error) {
             console.error('Failed to fetch sessions:', error);
-            // Mock sessions for now
-            setSessions([
-                {
-                    id: 'current',
-                    device: 'Current Session',
-                    browser: navigator.userAgent.includes('Chrome') ? 'Chrome' : 'Other',
-                    location: 'Current Location',
-                    lastActive: new Date().toISOString(),
-                    isCurrent: true
-                }
-            ]);
+            toast.error('Failed to load sessions');
+            setSessions([]);
         } finally {
             setLoadingSessions(false);
         }
@@ -268,8 +260,76 @@ export default function Profile() {
             setSessions(sessions.filter(s => s.id !== sessionId));
             toast.success('Session revoked successfully');
         } catch (error) {
-            toast.error('Failed to revoke session');
+            const errorMsg = error.response?.data?.error || 'Failed to revoke session';
+            toast.error(errorMsg);
         }
+    };
+
+    const handleRevokeAllSessions = async () => {
+        if (!window.confirm('This will log you out from all other devices. Continue?')) {
+            return;
+        }
+        
+        try {
+            const res = await revokeAllSessions();
+            const revokedCount = res.data?.revokedCount || 0;
+            toast.success(`Logged out from ${revokedCount} other device${revokedCount !== 1 ? 's' : ''}`);
+            // Refresh sessions list
+            fetchSessions();
+        } catch (error) {
+            const errorMsg = error.response?.data?.error || 'Failed to revoke sessions';
+            toast.error(errorMsg);
+        }
+    };
+
+    const handleLogout = async () => {
+        try {
+            await logout();
+            localStorage.removeItem('token');
+            localStorage.removeItem('role');
+            localStorage.removeItem('username');
+            navigate('/login');
+            toast.success('Logged out successfully');
+        } catch (error) {
+            // Even if the API fails, clear local storage and redirect
+            localStorage.removeItem('token');
+            localStorage.removeItem('role');
+            localStorage.removeItem('username');
+            navigate('/login');
+        }
+    };
+
+    // Get device icon based on device type
+    const getDeviceIcon = (deviceType) => {
+        switch (deviceType?.toLowerCase()) {
+            case 'mobile':
+                return <Smartphone className="w-5 h-5" />;
+            case 'tablet':
+                return <Tablet className="w-5 h-5" />;
+            case 'desktop':
+                return <Monitor className="w-5 h-5" />;
+            case 'api client':
+                return <Globe className="w-5 h-5" />;
+            default:
+                return <Laptop className="w-5 h-5" />;
+        }
+    };
+
+    // Format relative time
+    const formatRelativeTime = (dateString) => {
+        if (!dateString) return 'Unknown';
+        const date = new Date(dateString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+        if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+        if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+        return date.toLocaleDateString();
     };
 
     const getPasswordStrength = (password) => {
@@ -878,12 +938,34 @@ export default function Profile() {
                         {/* Sessions Tab */}
                         {activeTab === 'sessions' && (
                             <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 overflow-hidden">
-                                <div className="px-6 py-5 border-b border-gray-700/50">
-                                    <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-                                        <Monitor className="w-5 h-5 text-indigo-400" />
-                                        Active Sessions
-                                    </h2>
-                                    <p className="mt-1 text-sm text-gray-400">Manage your active sessions across devices</p>
+                                <div className="px-6 py-5 border-b border-gray-700/50 flex items-center justify-between">
+                                    <div>
+                                        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                                            <Monitor className="w-5 h-5 text-indigo-400" />
+                                            Active Sessions
+                                        </h2>
+                                        <p className="mt-1 text-sm text-gray-400">
+                                            Manage your active sessions across devices ({sessions.length} active)
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={fetchSessions}
+                                            className="p-2 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-lg transition-colors"
+                                            title="Refresh sessions"
+                                        >
+                                            <RefreshCw className={`w-5 h-5 ${loadingSessions ? 'animate-spin' : ''}`} />
+                                        </button>
+                                        {sessions.filter(s => !s.isCurrent).length > 0 && (
+                                            <button
+                                                onClick={handleRevokeAllSessions}
+                                                className="px-4 py-2 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg transition-colors flex items-center gap-2"
+                                            >
+                                                <LogOut className="w-4 h-4" />
+                                                Logout All Other Devices
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                                 
                                 <div className="p-6">
@@ -908,46 +990,66 @@ export default function Profile() {
                                                             <div className={`p-3 rounded-lg ${
                                                                 session.isCurrent ? 'bg-green-500/20' : 'bg-gray-600/50'
                                                             }`}>
-                                                                {session.device?.includes('Mobile') ? (
-                                                                    <Smartphone className={`w-5 h-5 ${session.isCurrent ? 'text-green-400' : 'text-gray-400'}`} />
-                                                                ) : (
-                                                                    <Monitor className={`w-5 h-5 ${session.isCurrent ? 'text-green-400' : 'text-gray-400'}`} />
-                                                                )}
+                                                                <span className={session.isCurrent ? 'text-green-400' : 'text-gray-400'}>
+                                                                    {getDeviceIcon(session.deviceType)}
+                                                                </span>
                                                             </div>
                                                             <div>
                                                                 <div className="flex items-center gap-2">
                                                                     <h4 className="font-medium text-white">
-                                                                        {session.device || 'Unknown Device'}
+                                                                        {session.deviceName || session.deviceType || 'Unknown Device'}
                                                                     </h4>
                                                                     {session.isCurrent && (
                                                                         <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full">
-                                                                            Current
+                                                                            Current Session
                                                                         </span>
                                                                     )}
                                                                 </div>
-                                                                <div className="flex items-center gap-4 text-xs text-gray-400 mt-1">
+                                                                <div className="flex flex-wrap items-center gap-3 text-xs text-gray-400 mt-1">
                                                                     <span className="flex items-center gap-1">
                                                                         <Globe className="w-3 h-3" />
                                                                         {session.browser || 'Unknown Browser'}
+                                                                        {session.browserVersion && ` v${session.browserVersion}`}
                                                                     </span>
                                                                     <span className="flex items-center gap-1">
-                                                                        <MapPin className="w-3 h-3" />
-                                                                        {session.location || 'Unknown Location'}
+                                                                        <Monitor className="w-3 h-3" />
+                                                                        {session.os || 'Unknown OS'}
                                                                     </span>
+                                                                    {session.ipAddress && (
+                                                                        <span className="flex items-center gap-1">
+                                                                            <MapPin className="w-3 h-3" />
+                                                                            {session.ipAddress}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
                                                                     <span className="flex items-center gap-1">
                                                                         <Clock className="w-3 h-3" />
-                                                                        {session.lastActive ? new Date(session.lastActive).toLocaleString() : 'Recently'}
+                                                                        Last active: {formatRelativeTime(session.lastActivity)}
+                                                                    </span>
+                                                                    <span className="flex items-center gap-1">
+                                                                        <Calendar className="w-3 h-3" />
+                                                                        Created: {session.createdAt ? new Date(session.createdAt).toLocaleDateString() : 'Unknown'}
                                                                     </span>
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                        {!session.isCurrent && (
+                                                        {session.isCurrent ? (
+                                                            <button
+                                                                onClick={handleLogout}
+                                                                className="px-4 py-2 text-sm bg-gray-600/50 text-gray-300 hover:bg-gray-600 rounded-lg transition-colors flex items-center gap-2"
+                                                                title="Logout from this device"
+                                                            >
+                                                                <LogOut className="w-4 h-4" />
+                                                                Logout
+                                                            </button>
+                                                        ) : (
                                                             <button
                                                                 onClick={() => handleRevokeSession(session.id)}
                                                                 className="p-2 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors"
-                                                                title="Revoke session"
+                                                                title="Revoke this session"
                                                             >
-                                                                <LogOut className="w-5 h-5" />
+                                                                <X className="w-5 h-5" />
                                                             </button>
                                                         )}
                                                     </div>
@@ -956,11 +1058,34 @@ export default function Profile() {
 
                                             {sessions.length === 0 && (
                                                 <div className="text-center py-8 text-gray-400">
-                                                    No active sessions found
+                                                    <Monitor className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                                                    <p>No active sessions found</p>
+                                                    <button
+                                                        onClick={fetchSessions}
+                                                        className="mt-3 text-indigo-400 hover:text-indigo-300 text-sm"
+                                                    >
+                                                        Click to refresh
+                                                    </button>
                                                 </div>
                                             )}
                                         </div>
                                     )}
+                                    
+                                    {/* Security Tips */}
+                                    <div className="mt-6 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
+                                        <div className="flex items-start gap-3">
+                                            <AlertTriangle className="w-5 h-5 text-yellow-400 mt-0.5" />
+                                            <div>
+                                                <h4 className="font-medium text-yellow-400">Security Tips</h4>
+                                                <ul className="mt-2 text-sm text-gray-400 space-y-1">
+                                                    <li>• Review your active sessions regularly</li>
+                                                    <li>• Revoke any sessions you don't recognize</li>
+                                                    <li>• If you see suspicious activity, change your password immediately</li>
+                                                    <li>• Enable Two-Factor Authentication for extra security</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -975,18 +1100,60 @@ export default function Profile() {
                                             <Download className="w-6 h-6 text-blue-400" />
                                         </div>
                                         <div className="flex-1">
-                                            <h3 className="font-semibold text-white">Export Your Data</h3>
+                                            <h3 className="font-semibold text-white">Export Your Data (GDPR)</h3>
                                             <p className="text-sm text-gray-400 mt-1">
-                                                Download a copy of all your data including profile, disputes, messages, and activity logs.
+                                                Download a comprehensive copy of all your personal data in JSON format.
                                             </p>
+                                            
+                                            {/* Data Included */}
+                                            <div className="mt-3 p-3 bg-gray-900/50 rounded-lg">
+                                                <p className="text-xs font-medium text-gray-300 mb-2">Data Included:</p>
+                                                <div className="grid grid-cols-2 gap-2 text-xs text-gray-400">
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Personal Information
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Account Security
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> All Disputes & Cases
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Messages History
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Evidence Files Metadata
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Notifications
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Activity Logs
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Payment History
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> Privacy Settings
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <span className="text-blue-400">✓</span> GDPR Information
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
                                             <button
                                                 onClick={handleExportData}
                                                 disabled={exporting}
                                                 className="mt-4 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 disabled:opacity-50 transition-colors"
                                             >
                                                 {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                                                {exporting ? 'Preparing...' : 'Export Data'}
+                                                {exporting ? 'Preparing Export...' : 'Export Data as JSON'}
                                             </button>
+                                            
+                                            <p className="text-xs text-gray-500 mt-2">
+                                                In compliance with GDPR Article 20 (Right to Data Portability)
+                                            </p>
                                         </div>
                                     </div>
                                 </div>

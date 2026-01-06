@@ -663,6 +663,142 @@ export default {
         });
     },
 
+    // 10. Send email verification
+    sendEmailVerification: async (email, username, verificationUrl) => {
+        return sendEmail({
+            to: email,
+            subject: 'Verify Your Email - AI Dispute Resolution Platform',
+            html: `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                        .header { background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                        .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+                        .button { display: inline-block; background: #4F46E5; color: white !important; padding: 14px 35px; text-decoration: none; border-radius: 8px; margin: 25px 0; font-weight: bold; font-size: 16px; }
+                        .button:hover { background: #4338CA; }
+                        .info-box { background: #EEF2FF; border-left: 4px solid #4F46E5; padding: 15px; margin: 20px 0; border-radius: 5px; }
+                        .warning { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; border-radius: 5px; }
+                        .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 14px; }
+                        .welcome-icon { font-size: 48px; margin-bottom: 15px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="header">
+                            <div class="welcome-icon">🎉</div>
+                            <h1 style="margin: 0; font-size: 24px;">Welcome to AI Dispute Resolution!</h1>
+                            <p style="margin: 10px 0 0 0; opacity: 0.9;">Just one more step to get started</p>
+                        </div>
+                        <div class="content">
+                            <p style="font-size: 16px;">Hi <strong>${username}</strong>,</p>
+                            
+                            <p>Thank you for registering with the AI Dispute Resolution Platform! To complete your registration and access all features, please verify your email address.</p>
+                            
+                            <div class="info-box">
+                                <strong>🔐 Why verify your email?</strong>
+                                <ul style="margin: 10px 0; padding-left: 20px;">
+                                    <li>Secure your account and enable password recovery</li>
+                                    <li>Receive important case updates and notifications</li>
+                                    <li>Get access to all platform features</li>
+                                    <li>Ensure your legal communications are delivered</li>
+                                </ul>
+                            </div>
+                            
+                            <p style="text-align: center;">
+                                <a href="${verificationUrl}" class="button">✓ Verify My Email</a>
+                            </p>
+                            
+                            <p style="text-align: center; color: #6b7280; font-size: 14px;">
+                                Or copy and paste this link into your browser:<br>
+                                <a href="${verificationUrl}" style="color: #4F46E5; word-break: break-all;">${verificationUrl}</a>
+                            </p>
+                            
+                            <div class="warning">
+                                <strong>⏰ This link expires in 24 hours</strong><br>
+                                If you didn't create an account, you can safely ignore this email.
+                            </div>
+                            
+                            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 25px 0;">
+                            
+                            <p style="color: #6b7280; font-size: 14px;">
+                                <strong>What's next after verification?</strong>
+                            </p>
+                            <ol style="color: #6b7280; font-size: 14px; padding-left: 20px;">
+                                <li>Complete your profile with personal details</li>
+                                <li>Enable two-factor authentication for extra security</li>
+                                <li>File a new dispute or wait for case invitations</li>
+                            </ol>
+                        </div>
+                        <div class="footer">
+                            <p><strong>AI Dispute Resolution Platform</strong></p>
+                            <p style="font-size: 12px;">Fair, Fast, and AI-Powered Justice</p>
+                            <p style="font-size: 12px; color: #9ca3af;">This is an automated email. Please do not reply.</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `
+        });
+    },
+
+    // 11. Send email verified confirmation
+    sendEmailVerifiedConfirmation: async (email, username) => {
+        return sendEmail({
+            to: email,
+            subject: 'Email Verified Successfully - AI Dispute Resolution',
+            html: `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                        .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                        .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+                        .button { display: inline-block; background: #10b981; color: white !important; padding: 14px 35px; text-decoration: none; border-radius: 8px; margin: 25px 0; font-weight: bold; }
+                        .success-box { background: #d1fae5; border-left: 4px solid #10b981; padding: 15px; margin: 20px 0; border-radius: 5px; }
+                        .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 14px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="header">
+                            <div style="font-size: 48px; margin-bottom: 15px;">✅</div>
+                            <h1 style="margin: 0;">Email Verified!</h1>
+                        </div>
+                        <div class="content">
+                            <p>Hi <strong>${username}</strong>,</p>
+                            
+                            <div class="success-box">
+                                <strong>🎉 Congratulations!</strong> Your email has been successfully verified. You now have full access to all platform features.
+                            </div>
+                            
+                            <p><strong>You can now:</strong></p>
+                            <ul>
+                                <li>File new disputes and cases</li>
+                                <li>Receive important notifications</li>
+                                <li>Participate in AI-mediated resolutions</li>
+                                <li>Access your full dispute history</li>
+                            </ul>
+                            
+                            <p style="text-align: center;">
+                                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/dashboard" class="button">Go to Dashboard</a>
+                            </p>
+                        </div>
+                        <div class="footer">
+                            <p>AI Dispute Resolution Platform</p>
+                            <p style="font-size: 12px;">This is an automated email. Please do not reply.</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `
+        });
+    },
+
     // Test function to verify email configuration
     testEmailConfiguration: async () => {
         if (!transporter) {

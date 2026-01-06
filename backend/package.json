@@ -34,6 +34,7 @@
     "socket.io": "^4.8.3",
     "stripe": "^20.1.0",
     "tesseract.js": "^7.0.0",
+    "ua-parser-js": "^2.0.7",
     "uuid": "^13.0.0",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",

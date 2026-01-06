@@ -4,7 +4,6 @@ import { getDisputes, getStats } from '../api';
 import { Scale, Clock, CheckCircle, AlertCircle, Plus, Building, Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useSocket } from '../context/SocketContext';
-import NotificationBell from '../components/NotificationBell';
 
 export default function Dashboard() {
     const [disputes, setDisputes] = useState([]);
@@ -170,7 +169,6 @@ export default function Dashboard() {
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
-                        <NotificationBell />
                         <Link
                             to="/new"
                             className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all shadow-md flex items-center gap-2 text-sm"

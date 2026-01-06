@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import fs from 'fs';
+import path from 'path';
 import PDFDocument from 'pdfkit';
 import nodemailer from 'nodemailer';
 import { createWorker } from 'tesseract.js';
@@ -28,6 +29,7 @@ import notificationService from './services/notificationService.js';
 import { initializeSentry, captureError, sentryRequestHandler, sentryTracingHandler, sentryErrorHandler } from './services/sentryService.js';
 import securityMiddleware from './middleware/security.js';
 import paymentService from './services/paymentService.js';
+import sessionService, { hashToken, getClientIP, parseUserAgent } from './services/sessionService.js';
 
 // ==================== SECURITY: ENFORCE JWT SECRET ====================
 if (!process.env.JWT_SECRET) {
@@ -253,6 +255,144 @@ function emitToUser(userId, event, data) {
     }
 }
 
+// ==================== OCR SERVICE ====================
+
+// Supported file types for OCR
+const OCR_SUPPORTED_MIMETYPES = [
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'image/bmp',
+    'image/tiff',
+    'image/webp'
+];
+
+// Check if file type is supported for OCR
+function isOcrSupported(mimeType) {
+    return OCR_SUPPORTED_MIMETYPES.includes(mimeType);
+}
+
+// Process OCR on a file
+async function processOcr(filePath, language = 'eng') {
+    try {
+        const worker = await createWorker(language, 1, {
+            langPath: path.join(process.cwd()),
+            logger: m => {
+                if (m.status === 'recognizing text') {
+                    logInfo('OCR Progress', { progress: Math.round(m.progress * 100) });
+                }
+            }
+        });
+        
+        const { data: { text, confidence } } = await worker.recognize(filePath);
+        await worker.terminate();
+        
+        return {
+            success: true,
+            text: text.trim(),
+            confidence: Math.round(confidence),
+            wordCount: text.trim().split(/\s+/).filter(w => w.length > 0).length
+        };
+    } catch (error) {
+        logError('OCR Processing Error', { error: error.message, filePath });
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+// Background OCR processing for evidence
+async function processEvidenceOcr(evidenceId) {
+    try {
+        // Import Evidence model (it's defined later, so we use sequelize.models)
+        const evidenceRecord = await sequelize.models.evidence.findByPk(evidenceId);
+        
+        if (!evidenceRecord) {
+            logError('OCR: Evidence not found', { evidenceId });
+            return { success: false, error: 'Evidence not found' };
+        }
+
+        // Check if file type supports OCR
+        if (!isOcrSupported(evidenceRecord.mimeType)) {
+            await evidenceRecord.update({
+                ocrStatus: 'not_applicable',
+                ocrProcessedAt: new Date()
+            });
+            return { success: true, status: 'not_applicable' };
+        }
+
+        // Update status to processing
+        await evidenceRecord.update({ ocrStatus: 'processing' });
+
+        const filePath = path.join(process.cwd(), 'uploads', evidenceRecord.fileName);
+
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+            await evidenceRecord.update({
+                ocrStatus: 'failed',
+                ocrError: 'File not found on disk',
+                ocrProcessedAt: new Date()
+            });
+            return { success: false, error: 'File not found' };
+        }
+
+        // Process OCR
+        const result = await processOcr(filePath);
+
+        if (result.success) {
+            await evidenceRecord.update({
+                ocrText: result.text,
+                ocrStatus: 'completed',
+                ocrProcessedAt: new Date(),
+                ocrError: null
+            });
+
+            logInfo('OCR completed', {
+                evidenceId,
+                wordCount: result.wordCount,
+                confidence: result.confidence
+            });
+
+            return {
+                success: true,
+                status: 'completed',
+                text: result.text,
+                wordCount: result.wordCount,
+                confidence: result.confidence
+            };
+        } else {
+            await evidenceRecord.update({
+                ocrStatus: 'failed',
+                ocrError: result.error,
+                ocrProcessedAt: new Date()
+            });
+
+            return { success: false, error: result.error };
+        }
+    } catch (error) {
+        logError('OCR Processing failed', { evidenceId, error: error.message });
+        
+        try {
+            const evidenceRecord = await sequelize.models.evidence.findByPk(evidenceId);
+            if (evidenceRecord) {
+                await evidenceRecord.update({
+                    ocrStatus: 'failed',
+                    ocrError: error.message,
+                    ocrProcessedAt: new Date()
+                });
+            }
+        } catch (e) {
+            // Ignore update error
+        }
+        
+        return { success: false, error: error.message };
+    }
+}
+
+// ==================== END OCR SERVICE ====================
+
 // Make io accessible in routes
 app.set('io', io);
 app.set('emitToDispute', emitToDispute);
@@ -285,6 +425,10 @@ const User = sequelize.define('user', {
     // Password Reset
     resetToken: { type: DataTypes.STRING },
     resetTokenExpiry: { type: DataTypes.DATE },
+    // Email Verification
+    isEmailVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
+    emailVerificationToken: { type: DataTypes.STRING },
+    emailVerificationExpiry: { type: DataTypes.DATE },
     // Profile Picture
     profilePicture: { type: DataTypes.STRING }, // Path to profile image
     // Two-Factor Authentication
@@ -317,6 +461,88 @@ const User = sequelize.define('user', {
         })
     }
 });
+
+// Session Model - for proper session management
+const Session = sequelize.define('session', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    userId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+            model: 'users',
+            key: 'id'
+        }
+    },
+    token: {
+        type: DataTypes.STRING(512),
+        allowNull: false,
+        unique: true
+    },
+    tokenHash: {
+        type: DataTypes.STRING(64),
+        allowNull: false,
+        unique: true
+    },
+    deviceType: {
+        type: DataTypes.STRING(50),
+        defaultValue: 'Unknown'
+    },
+    deviceName: {
+        type: DataTypes.STRING(100),
+        defaultValue: 'Unknown Device'
+    },
+    browser: {
+        type: DataTypes.STRING(100),
+        defaultValue: 'Unknown Browser'
+    },
+    browserVersion: {
+        type: DataTypes.STRING(50)
+    },
+    os: {
+        type: DataTypes.STRING(100),
+        defaultValue: 'Unknown OS'
+    },
+    ipAddress: {
+        type: DataTypes.STRING(45) // IPv6 compatible
+    },
+    location: {
+        type: DataTypes.STRING(200),
+        defaultValue: 'Unknown Location'
+    },
+    lastActivity: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW
+    },
+    expiresAt: {
+        type: DataTypes.DATE,
+        allowNull: false
+    },
+    isActive: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true
+    },
+    revokedAt: {
+        type: DataTypes.DATE
+    },
+    revokedReason: {
+        type: DataTypes.STRING(200)
+    }
+}, {
+    indexes: [
+        { fields: ['userId'] },
+        { fields: ['tokenHash'] },
+        { fields: ['isActive'] },
+        { fields: ['expiresAt'] }
+    ]
+});
+
+// Session belongs to User
+Session.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(Session, { foreignKey: 'userId', as: 'sessions' });
 
 const Dispute = sequelize.define('dispute', {
     title: { type: DataTypes.STRING, allowNull: false },
@@ -411,11 +637,17 @@ const Evidence = sequelize.define('evidence', {
     fileType: { type: DataTypes.STRING, allowNull: false }, // image, document, video, audio
     description: { type: DataTypes.TEXT }, // Optional description of the evidence
     isVerified: { type: DataTypes.BOOLEAN, defaultValue: false }, // Admin verification
+    // OCR Fields
+    ocrText: { type: DataTypes.TEXT }, // Extracted text from OCR
+    ocrStatus: { type: DataTypes.STRING, defaultValue: 'pending' }, // pending, processing, completed, failed, not_applicable
+    ocrProcessedAt: { type: DataTypes.DATE }, // When OCR was completed
+    ocrError: { type: DataTypes.STRING }, // Error message if OCR failed
 }, {
     indexes: [
         { fields: ['disputeId'] },
         { fields: ['uploadedBy'] },
         { fields: ['createdAt'] },
+        { fields: ['ocrStatus'] },
     ]
 });
 
@@ -439,34 +671,177 @@ const Notification = sequelize.define('notification', {
     ]
 });
 
-// Multer setup with file validation
+// ==================== ENHANCED FILE UPLOAD VALIDATION ====================
+
+// Multer storage configuration
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'uploads/');
+        const uploadDir = 'uploads/';
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_'));
+        // Sanitize filename and add unique identifier
+        const sanitizedName = file.originalname
+            .replace(/[^a-zA-Z0-9.-]/g, '_')
+            .substring(0, 100); // Limit filename length
+        const uniqueSuffix = Date.now() + '-' + crypto.randomBytes(6).toString('hex');
+        const ext = path.extname(sanitizedName);
+        const nameWithoutExt = path.basename(sanitizedName, ext);
+        cb(null, `${uniqueSuffix}-${nameWithoutExt}${ext}`);
     }
 });
 
-const fileFilter = (req, file, cb) => {
-    // Accept images and PDFs only
-    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'application/pdf'];
-    if (allowedMimes.includes(file.mimetype)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and PDF files are allowed.'), false);
+// File type validation configurations
+const FILE_TYPES = {
+    IMAGE: {
+        mimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'],
+        extensions: ['.jpg', '.jpeg', '.png', '.gif', '.webp'],
+        maxSize: 2 * 1024 * 1024, // 2MB for images
+        description: 'JPEG, PNG, GIF, or WebP'
+    },
+    DOCUMENT: {
+        mimes: [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ],
+        extensions: ['.pdf', '.doc', '.docx'],
+        maxSize: 10 * 1024 * 1024, // 10MB for documents
+        description: 'PDF, DOC, or DOCX'
+    },
+    EVIDENCE: {
+        mimes: [
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+            'application/pdf',
+            'video/mp4', 'video/mpeg', 'video/quicktime',
+            'audio/mpeg', 'audio/wav', 'audio/mp3'
+        ],
+        extensions: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.mp4', '.mpeg', '.mov', '.mp3', '.wav'],
+        maxSize: 50 * 1024 * 1024, // 50MB for evidence files
+        description: 'Images, PDFs, Videos (MP4, MPEG, MOV), or Audio (MP3, WAV)'
+    },
+    PROFILE: {
+        mimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
+        extensions: ['.jpg', '.jpeg', '.png', '.webp'],
+        maxSize: 2 * 1024 * 1024, // 2MB for profile pictures
+        description: 'JPEG, PNG, or WebP'
     }
 };
 
-const upload = multer({ 
+// Create file filter factory
+const createFileFilter = (allowedTypes) => {
+    return (req, file, cb) => {
+        try {
+            // Check MIME type
+            if (!allowedTypes.mimes.includes(file.mimetype)) {
+                return cb(
+                    new Error(`Invalid file type. Only ${allowedTypes.description} files are allowed.`),
+                    false
+                );
+            }
+            
+            // Check file extension (additional security layer)
+            const ext = path.extname(file.originalname).toLowerCase();
+            if (!allowedTypes.extensions.includes(ext)) {
+                return cb(
+                    new Error(`Invalid file extension. Only ${allowedTypes.description} files are allowed.`),
+                    false
+                );
+            }
+            
+            // Additional security: Check for suspicious filenames
+            if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\')) {
+                return cb(new Error('Invalid filename detected.'), false);
+            }
+            
+            cb(null, true);
+        } catch (error) {
+            cb(new Error('File validation error.'), false);
+        }
+    };
+};
+
+// Create different upload configurations for different purposes
+const uploadEvidence = multer({
     storage: storage,
-    fileFilter: fileFilter,
+    fileFilter: createFileFilter(FILE_TYPES.EVIDENCE),
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
+        fileSize: FILE_TYPES.EVIDENCE.maxSize,
+        files: 1
     }
 });
+
+const uploadProfile = multer({
+    storage: storage,
+    fileFilter: createFileFilter(FILE_TYPES.PROFILE),
+    limits: {
+        fileSize: FILE_TYPES.PROFILE.maxSize,
+        files: 1
+    }
+});
+
+const uploadDocument = multer({
+    storage: storage,
+    fileFilter: createFileFilter(FILE_TYPES.DOCUMENT),
+    limits: {
+        fileSize: FILE_TYPES.DOCUMENT.maxSize,
+        files: 1
+    }
+});
+
+const uploadImage = multer({
+    storage: storage,
+    fileFilter: createFileFilter(FILE_TYPES.IMAGE),
+    limits: {
+        fileSize: FILE_TYPES.IMAGE.maxSize,
+        files: 1
+    }
+});
+
+// Default upload for backward compatibility (uses evidence validation)
+const upload = uploadEvidence;
+
+// Global error handler for multer errors
+const handleMulterError = (err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        // Multer-specific errors
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({
+                error: 'File too large',
+                message: `Maximum file size exceeded. Please upload a file smaller than ${Math.round(err.limits?.fileSize / 1024 / 1024)}MB.`,
+                code: 'FILE_TOO_LARGE'
+            });
+        } else if (err.code === 'LIMIT_FILE_COUNT') {
+            return res.status(400).json({
+                error: 'Too many files',
+                message: 'You can only upload one file at a time.',
+                code: 'TOO_MANY_FILES'
+            });
+        } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+            return res.status(400).json({
+                error: 'Unexpected field',
+                message: 'Unexpected file field in the request.',
+                code: 'UNEXPECTED_FIELD'
+            });
+        }
+        return res.status(400).json({
+            error: 'Upload error',
+            message: err.message,
+            code: 'UPLOAD_ERROR'
+        });
+    } else if (err) {
+        // Custom validation errors
+        return res.status(400).json({
+            error: 'File validation failed',
+            message: err.message,
+            code: 'VALIDATION_ERROR'
+        });
+    }
+    next();
+};
 
 // Gemini Setup - Use GOOGLE_API_KEY
 const API_KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || 'API_KEY_MISSING';
@@ -474,21 +849,497 @@ const genAI = new GoogleGenerativeAI(API_KEY);
 console.log('AI API Key configured:', API_KEY !== 'API_KEY_MISSING' ? 'Yes' : 'No');
 
 // Helper to read file to generatable part
-function fileToGenerativePart(path, mimeType) {
+function fileToGenerativePart(filePath, mimeType) {
+    // Detect actual MIME type from file extension if not provided
+    if (!mimeType || mimeType === 'image/jpeg') {
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeTypes = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp'
+        };
+        mimeType = mimeTypes[ext] || 'image/jpeg';
+    }
+    
     return {
         inlineData: {
-            data: fs.readFileSync(path).toString("base64"),
+            data: fs.readFileSync(filePath).toString("base64"),
             mimeType
         }
     };
 }
 
-// AI Analysis Helper Function (Multimodal)
-async function analyzeDisputeWithAI(dispute, messages, isReanalysis = false) {
-    if (API_KEY === 'API_KEY_MISSING') return null;
+// ==================== ENHANCED IDENTITY VERIFICATION SERVICE ====================
+
+/**
+ * Analyze ID Document - Extract details and validate authenticity
+ */
+async function analyzeIdDocument(idCardPath) {
+    if (API_KEY === 'API_KEY_MISSING') {
+        return { 
+            success: false, 
+            error: "API Key not configured",
+            isValidDocument: false 
+        };
+    }
 
     try {
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const imagePart = fileToGenerativePart(`uploads/${idCardPath}`);
+
+        const prompt = `You are an expert document analyst specializing in identity verification.
+
+Analyze this image and determine if it is a valid government-issued identity document.
+
+TASKS:
+1. Identify the TYPE of document (Passport, Driver's License, National ID, Aadhaar Card, PAN Card, Voter ID, etc.)
+2. Determine if it appears to be AUTHENTIC (not edited, not a photocopy of a photocopy, not a screen photo)
+3. Extract visible INFORMATION from the document
+4. Check for SECURITY FEATURES if visible (holograms, watermarks, microprint, etc.)
+5. Assess overall QUALITY of the image (is it clear enough for verification?)
+
+RESPOND IN EXACT JSON FORMAT:
+{
+    "isValidDocument": true/false,
+    "documentType": "Type of ID document or 'Unknown'",
+    "country": "Country of issue or 'Unknown'",
+    "extractedInfo": {
+        "fullName": "Name as shown on ID or null",
+        "dateOfBirth": "DOB if visible or null",
+        "documentNumber": "ID number if visible or null",
+        "expiryDate": "Expiry date if visible or null",
+        "gender": "Gender if visible or null"
+    },
+    "qualityAssessment": {
+        "isImageClear": true/false,
+        "isFaceVisible": true/false,
+        "isTextReadable": true/false,
+        "hasSecurityFeatures": true/false
+    },
+    "authenticity": {
+        "appearsOriginal": true/false,
+        "suspiciousIndicators": ["list of any suspicious elements"] or [],
+        "confidence": 0.0 to 1.0
+    },
+    "reason": "Brief explanation of your assessment"
+}`;
+
+        const result = await model.generateContent([prompt, imagePart]);
+        const response = await result.response;
+        const text = response.text();
+
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+                success: true,
+                ...parsed
+            };
+        }
+        
+        return { 
+            success: false, 
+            error: "Failed to parse AI response",
+            isValidDocument: false 
+        };
+    } catch (err) {
+        logError("ID Document Analysis Error", { error: err.message, path: idCardPath });
+        return { 
+            success: false, 
+            error: err.message,
+            isValidDocument: false 
+        };
+    }
+}
+
+/**
+ * Analyze Selfie - Check quality and detect spoofing attempts
+ */
+async function analyzeSelfie(selfiePath) {
+    if (API_KEY === 'API_KEY_MISSING') {
+        return { 
+            success: false, 
+            error: "API Key not configured",
+            isValidSelfie: false 
+        };
+    }
+
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const imagePart = fileToGenerativePart(`uploads/${selfiePath}`);
+
+        const prompt = `You are an expert in facial recognition and anti-spoofing detection.
+
+Analyze this selfie image for identity verification purposes.
+
+TASKS:
+1. Confirm this is a REAL SELFIE of a person (not a photo of a photo, not a printed image, not a screen display)
+2. Check the IMAGE QUALITY (lighting, focus, face position)
+3. Verify the FACE is clearly visible and unobstructed
+4. Look for SPOOFING INDICATORS (edges of printed paper, screen pixels, unnatural lighting, image artifacts)
+5. Assess if the person appears to be a LIVE human (natural skin texture, appropriate reflections in eyes)
+
+RESPOND IN EXACT JSON FORMAT:
+{
+    "isValidSelfie": true/false,
+    "faceDetected": true/false,
+    "faceCount": number,
+    "qualityAssessment": {
+        "isFaceClear": true/false,
+        "isWellLit": true/false,
+        "isFaceForward": true/false,
+        "eyesVisible": true/false,
+        "faceUnobstructed": true/false
+    },
+    "livenessIndicators": {
+        "appearsLive": true/false,
+        "naturalSkinTexture": true/false,
+        "naturalLighting": true/false,
+        "noScreenArtifacts": true/false,
+        "noPrintedPhotoEdges": true/false
+    },
+    "spoofingRisk": "low" | "medium" | "high",
+    "confidence": 0.0 to 1.0,
+    "reason": "Brief explanation of your assessment"
+}`;
+
+        const result = await model.generateContent([prompt, imagePart]);
+        const response = await result.response;
+        const text = response.text();
+
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+                success: true,
+                ...parsed
+            };
+        }
+        
+        return { 
+            success: false, 
+            error: "Failed to parse AI response",
+            isValidSelfie: false 
+        };
+    } catch (err) {
+        logError("Selfie Analysis Error", { error: err.message, path: selfiePath });
+        return { 
+            success: false, 
+            error: err.message,
+            isValidSelfie: false 
+        };
+    }
+}
+
+/**
+ * Compare faces between selfie and ID document
+ */
+async function compareFaces(idCardPath, selfiePath) {
+    if (API_KEY === 'API_KEY_MISSING') {
+        return { 
+            success: false, 
+            error: "API Key not configured",
+            facesMatch: false 
+        };
+    }
+
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const idPart = fileToGenerativePart(`uploads/${idCardPath}`);
+        const selfiePart = fileToGenerativePart(`uploads/${selfiePath}`);
+
+        const prompt = `You are an expert facial recognition analyst performing identity verification.
+
+Compare the TWO images provided:
+- IMAGE 1: An identity document (ID card, passport, driver's license)
+- IMAGE 2: A selfie of a person
+
+TASKS:
+1. LOCATE the face in the ID document photo
+2. LOCATE the face in the selfie
+3. COMPARE facial features between the two faces:
+   - Face shape and structure
+   - Eye shape and spacing
+   - Nose shape and size
+   - Mouth and lip shape
+   - Ear shape (if visible)
+   - Facial hair patterns (if any)
+   - Any distinctive features (moles, scars, etc.)
+4. Account for ACCEPTABLE DIFFERENCES:
+   - Aging (ID photos may be older)
+   - Different lighting conditions
+   - Slight angle differences
+   - Facial hair changes
+   - Weight changes
+   - Glasses on/off
+5. Identify CONCERNING DIFFERENCES that suggest different people
+
+RESPOND IN EXACT JSON FORMAT:
+{
+    "facesMatch": true/false,
+    "matchConfidence": 0.0 to 1.0,
+    "faceFoundInId": true/false,
+    "faceFoundInSelfie": true/false,
+    "comparisonDetails": {
+        "faceShapeMatch": true/false,
+        "eyeShapeMatch": true/false,
+        "noseMatch": true/false,
+        "mouthMatch": true/false,
+        "overallSimilarity": "high" | "medium" | "low" | "none"
+    },
+    "acceptableDifferences": ["list of minor differences that don't affect match"] or [],
+    "concerningDifferences": ["list of major differences suggesting different people"] or [],
+    "verificationDecision": "MATCH" | "NO_MATCH" | "INCONCLUSIVE",
+    "reason": "Detailed explanation of your comparison"
+}`;
+
+        const result = await model.generateContent([prompt, idPart, selfiePart]);
+        const response = await result.response;
+        const text = response.text();
+
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+                success: true,
+                ...parsed
+            };
+        }
+        
+        return { 
+            success: false, 
+            error: "Failed to parse AI response",
+            facesMatch: false 
+        };
+    } catch (err) {
+        logError("Face Comparison Error", { error: err.message });
+        return { 
+            success: false, 
+            error: err.message,
+            facesMatch: false 
+        };
+    }
+}
+
+/**
+ * Comprehensive Identity Verification - Combines all checks
+ */
+async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
+    if (API_KEY === 'API_KEY_MISSING') {
+        return { 
+            verified: false, 
+            reason: "API Key not configured. Verification unavailable.",
+            confidence: 0,
+            details: null
+        };
+    }
+
+    const startTime = Date.now();
+    const verificationId = uuidv4();
+
+    logInfo('Starting identity verification', { 
+        verificationId, 
+        username, 
+        idCardPath, 
+        selfiePath 
+    });
+
+    try {
+        // Step 1: Analyze ID Document
+        logInfo('Analyzing ID document...', { verificationId });
+        const idAnalysis = await analyzeIdDocument(idCardPath);
+        
+        if (!idAnalysis.success || !idAnalysis.isValidDocument) {
+            logInfo('ID document validation failed', { verificationId, result: idAnalysis });
+            return {
+                verified: false,
+                reason: idAnalysis.reason || "The uploaded document does not appear to be a valid government-issued ID.",
+                confidence: 0,
+                step: 'document_validation',
+                details: {
+                    idAnalysis,
+                    selfieAnalysis: null,
+                    faceComparison: null
+                }
+            };
+        }
+
+        // Step 2: Analyze Selfie
+        logInfo('Analyzing selfie...', { verificationId });
+        const selfieAnalysis = await analyzeSelfie(selfiePath);
+        
+        if (!selfieAnalysis.success || !selfieAnalysis.isValidSelfie) {
+            logInfo('Selfie validation failed', { verificationId, result: selfieAnalysis });
+            return {
+                verified: false,
+                reason: selfieAnalysis.reason || "The selfie could not be verified. Please ensure you take a clear photo of your face.",
+                confidence: 0,
+                step: 'selfie_validation',
+                details: {
+                    idAnalysis,
+                    selfieAnalysis,
+                    faceComparison: null
+                }
+            };
+        }
+
+        // Check for high spoofing risk
+        if (selfieAnalysis.spoofingRisk === 'high') {
+            logInfo('High spoofing risk detected', { verificationId, result: selfieAnalysis });
+            return {
+                verified: false,
+                reason: "The selfie appears suspicious. Please take a fresh photo of yourself, not a photo of a photo or screen.",
+                confidence: 0,
+                step: 'spoofing_detection',
+                details: {
+                    idAnalysis,
+                    selfieAnalysis,
+                    faceComparison: null
+                }
+            };
+        }
+
+        // Step 3: Compare Faces
+        logInfo('Comparing faces...', { verificationId });
+        const faceComparison = await compareFaces(idCardPath, selfiePath);
+        
+        if (!faceComparison.success) {
+            logInfo('Face comparison failed', { verificationId, result: faceComparison });
+            return {
+                verified: false,
+                reason: faceComparison.error || "Could not compare faces. Please ensure both photos show a clear face.",
+                confidence: 0,
+                step: 'face_comparison',
+                details: {
+                    idAnalysis,
+                    selfieAnalysis,
+                    faceComparison
+                }
+            };
+        }
+
+        // Step 4: Name Matching (Optional validation)
+        let nameMatchInfo = null;
+        if (idAnalysis.extractedInfo?.fullName && username) {
+            const idName = idAnalysis.extractedInfo.fullName.toLowerCase().trim();
+            const userName = username.toLowerCase().trim();
+            
+            // Check if username is contained in ID name or vice versa
+            const nameWords = idName.split(/\s+/);
+            const userWords = userName.split(/\s+/);
+            
+            const anyWordMatch = nameWords.some(nw => 
+                userWords.some(uw => 
+                    nw.includes(uw) || uw.includes(nw)
+                )
+            );
+
+            nameMatchInfo = {
+                nameOnId: idAnalysis.extractedInfo.fullName,
+                username: username,
+                partialMatch: anyWordMatch
+            };
+        }
+
+        // Final Decision
+        const isVerified = faceComparison.facesMatch && 
+                          faceComparison.verificationDecision === 'MATCH' &&
+                          faceComparison.matchConfidence >= 0.6;
+
+        const overallConfidence = Math.round(
+            ((idAnalysis.authenticity?.confidence || 0.8) * 0.2 +
+             (selfieAnalysis.confidence || 0.8) * 0.2 +
+             (faceComparison.matchConfidence || 0) * 0.6) * 100
+        );
+
+        const duration = Date.now() - startTime;
+        
+        logInfo('Identity verification completed', { 
+            verificationId, 
+            verified: isVerified, 
+            confidence: overallConfidence,
+            duration: `${duration}ms`
+        });
+
+        let reason;
+        if (isVerified) {
+            reason = `Identity verified successfully. The person in the selfie matches the photo on the ${idAnalysis.documentType || 'ID document'}.`;
+        } else if (faceComparison.verificationDecision === 'INCONCLUSIVE') {
+            reason = "Verification inconclusive. The images may not be clear enough for a definitive match. Please try again with clearer photos.";
+        } else {
+            reason = faceComparison.reason || "The face in the selfie does not appear to match the face on the ID document.";
+        }
+
+        return {
+            verified: isVerified,
+            reason,
+            confidence: overallConfidence,
+            nameOnID: idAnalysis.extractedInfo?.fullName || null,
+            documentType: idAnalysis.documentType,
+            verificationId,
+            step: 'completed',
+            details: {
+                idAnalysis: {
+                    documentType: idAnalysis.documentType,
+                    country: idAnalysis.country,
+                    isValid: idAnalysis.isValidDocument,
+                    authenticity: idAnalysis.authenticity
+                },
+                selfieAnalysis: {
+                    isValid: selfieAnalysis.isValidSelfie,
+                    spoofingRisk: selfieAnalysis.spoofingRisk,
+                    quality: selfieAnalysis.qualityAssessment
+                },
+                faceComparison: {
+                    match: faceComparison.facesMatch,
+                    confidence: faceComparison.matchConfidence,
+                    decision: faceComparison.verificationDecision,
+                    similarity: faceComparison.comparisonDetails?.overallSimilarity
+                },
+                nameMatch: nameMatchInfo,
+                processingTime: `${duration}ms`
+            }
+        };
+
+    } catch (err) {
+        logError("Comprehensive Verification Error", { 
+            verificationId, 
+            error: err.message,
+            stack: err.stack 
+        });
+        return { 
+            verified: false, 
+            reason: "An error occurred during verification. Please try again.",
+            confidence: 0,
+            error: err.message,
+            verificationId
+        };
+    }
+}
+
+// ==================== END IDENTITY VERIFICATION SERVICE ====================
+
+// Helper to verify if document is a valid ID (Simplified check)
+
+// AI Analysis Helper Function (Multimodal)
+async function analyzeDisputeWithAI(dispute, messages, isReanalysis = false) {
+    console.log('=== AI Analysis Started ===');
+    console.log('API_KEY status:', API_KEY !== 'API_KEY_MISSING' ? 'Configured' : 'MISSING');
+    console.log('Dispute ID:', dispute.id);
+    console.log('Message count:', messages.length);
+    console.log('Is reanalysis:', isReanalysis);
+    
+    if (API_KEY === 'API_KEY_MISSING') {
+        console.error('AI Analysis skipped: API_KEY is missing');
+        return null;
+    }
+
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        console.log('Gemini model initialized: gemini-1.5-flash');
 
         // Collect all image evidence from messages
         const evidenceParts = [];
@@ -561,56 +1412,42 @@ Respond in this EXACT JSON format:
 }`;
 
         const parts = [prompt, ...evidenceParts];
+        console.log('Sending request to Gemini API with', evidenceParts.length, 'evidence images');
+        
         const result = await model.generateContent(parts);
         const response = await result.response;
         let text = response.text();
 
         console.log('AI Response received, length:', text.length);
+        console.log('AI Raw Response (first 500 chars):', text.substring(0, 500));
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            console.log('AI Analysis parsed successfully');
-            return parsed;
+            try {
+                const parsed = JSON.parse(jsonMatch[0]);
+                console.log('AI Analysis parsed successfully');
+                console.log('Solutions count:', parsed.solutions?.length || 0);
+                console.log('Seriousness:', parsed.seriousness);
+                return parsed;
+            } catch (parseError) {
+                console.error('JSON Parse Error:', parseError.message);
+                console.error('Attempted to parse:', jsonMatch[0].substring(0, 300));
+                return null;
+            }
+        } else {
+            console.error('No JSON found in AI response');
+            console.error('Full response:', text);
         }
         return null;
     } catch (error) {
-        console.error('AI Analysis Error:', error.message || error);
+        console.error('=== AI Analysis Error ===');
+        console.error('Error name:', error.name);
+        console.error('Error message:', error.message);
+        console.error('Error stack:', error.stack);
+        if (error.response) {
+            console.error('Error response:', error.response);
+        }
         return null;
-    }
-}
-
-// AI Verification Helper
-async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
-    if (API_KEY === 'API_KEY_MISSING') return { verified: false, reason: "API Key missing" };
-
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-        const idPart = fileToGenerativePart(`uploads/${idCardPath}`, "image/jpeg");
-        const selfiePart = fileToGenerativePart(`uploads/${selfiePath}`, "image/jpeg");
-
-        const prompt = `You are an Identity Verification Agent.
-        Task: 
-        1. Compare the face in the Selfie with the face in the ID Card. Are they the same person?
-        2. Read the Name from the ID Card. Does it arguably match the username "${username}"? (Allow for minor spelling diffs or partial names).
-        
-        Respond in EXACT JSON:
-        {
-            "verified": true/false,
-            "reason": "Explanation of match or mismatch",
-            "nameOnID": "Name extracted from ID"
-        }`;
-
-        const result = await model.generateContent([prompt, idPart, selfiePart]);
-        const response = await result.response;
-        const text = response.text();
-
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        return jsonMatch ? JSON.parse(jsonMatch[0]) : { verified: false, reason: "AI output error" };
-    } catch (err) {
-        console.error("Verification Error:", err);
-        return { verified: false, reason: "Verification processing failed" };
     }
 }
 
@@ -638,10 +1475,25 @@ async function verifyDocumentIsID(path) {
 // Check and trigger AI analysis after 10 messages
 async function checkAndTriggerAI(disputeId) {
     try {
+        console.log('=== checkAndTriggerAI called ===');
+        console.log('Dispute ID:', disputeId);
+        
         const dispute = await Dispute.findByPk(disputeId);
-        if (!dispute || dispute.aiSolutions || dispute.forwardedToCourt) return;
+        if (!dispute) {
+            console.log('Dispute not found');
+            return;
+        }
+        if (dispute.aiSolutions) {
+            console.log('AI Solutions already exist, skipping');
+            return;
+        }
+        if (dispute.forwardedToCourt) {
+            console.log('Dispute already forwarded to court, skipping');
+            return;
+        }
 
         const messageCount = await Message.count({ where: { disputeId } });
+        console.log('Current message count:', messageCount);
 
         if (messageCount >= 10) {
             const messages = await Message.findAll({
@@ -651,10 +1503,11 @@ async function checkAndTriggerAI(disputeId) {
 
             console.log(`Triggering AI analysis for dispute ${disputeId} (${messageCount} messages)`);
             let analysis = await analyzeDisputeWithAI(dispute, messages);
+            let isAIGenerated = !!analysis;
 
             // Fallback if AI fails
             if (!analysis) {
-                console.log('AI failed, using fallback solutions');
+                console.log('=== AI FAILED - Using fallback solutions ===');
                 analysis = {
                     summary: 'AI analysis could not be completed. Based on the conversation, here are general mediation options.',
                     legalAssessment: 'Please consult a legal professional for detailed assessment under Indian law.',
@@ -679,13 +1532,17 @@ async function checkAndTriggerAI(disputeId) {
                         }
                     ]
                 };
+            } else {
+                console.log('=== AI ANALYSIS SUCCESS ===');
+                console.log('Summary:', analysis.summary?.substring(0, 100));
             }
 
             dispute.aiAnalysis = analysis.summary + '\n\n' + analysis.legalAssessment;
             dispute.aiSolutions = JSON.stringify(analysis.solutions);
             dispute.status = 'AwaitingDecision';
             await dispute.save();
-            logInfo('AI analysis completed for dispute', { disputeId });
+            logInfo('AI analysis completed for dispute', { disputeId, isAIGenerated });
+            console.log('Dispute saved with AI analysis. AI Generated:', isAIGenerated);
             
             // Audit log: AI analysis completed
             await logAuditEvent({
@@ -693,11 +1550,12 @@ async function checkAndTriggerAI(disputeId) {
                 category: AuditCategories.AI,
                 resourceType: 'DISPUTE',
                 resourceId: disputeId,
-                description: `AI analysis completed for case #${disputeId} - 3 solutions generated`,
+                description: `AI analysis completed for case #${disputeId} - ${isAIGenerated ? 'AI Generated' : 'Fallback'} - ${analysis.solutions?.length || 0} solutions`,
                 metadata: {
                     messageCount,
                     solutionsCount: analysis.solutions?.length || 0,
-                    seriousness: analysis.seriousness || 'MEDIUM'
+                    seriousness: analysis.seriousness || 'MEDIUM',
+                    isAIGenerated
                 },
                 status: 'SUCCESS'
             });
@@ -729,7 +1587,8 @@ app.get('/api/health', async (req, res) => {
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
             database: dbHealth,
-            version: process.env.npm_package_version || '1.0.0'
+            version: process.env.npm_package_version || '1.0.0',
+            aiConfigured: API_KEY !== 'API_KEY_MISSING'
         });
     } catch (error) {
         logError('Health check failed', { error: error.message });
@@ -741,17 +1600,73 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
-// Middleware
-const authMiddleware = (req, res, next) => {
+// Middleware - Enhanced with session store validation
+const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token provided' });
 
     try {
+        // First verify the JWT signature and expiry
         const decoded = jwt.verify(token, JWT_SECRET);
+        
+        // Then validate against session store
+        const session = await sessionService.validateSession(token);
+        
+        if (!session) {
+            // Session not found or revoked - could be logged out from another device
+            return res.status(401).json({ 
+                error: 'Session expired or revoked',
+                code: 'SESSION_INVALID'
+            });
+        }
+        
+        // Attach user info and session to request
         req.user = decoded;
+        req.session = session;
+        req.token = token;
         next();
     } catch (err) {
-        return res.status(401).json({ error: 'Invalid token' });
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+        }
+        return res.status(401).json({ error: 'Invalid token', code: 'TOKEN_INVALID' });
+    }
+};
+
+// Auth middleware for media/file preview (also accepts token from query parameter)
+// This is needed for media elements (img, video, audio, iframe) that can't set Authorization headers
+const authMiddlewareForMedia = async (req, res, next) => {
+    // Try to get token from Authorization header first, then from query parameter
+    let token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token && req.query.token) {
+        token = req.query.token;
+    }
+    
+    if (!token) return res.status(401).json({ error: 'No token provided' });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        
+        // Validate against session store
+        const session = await sessionService.validateSession(token);
+        
+        if (!session) {
+            return res.status(401).json({ 
+                error: 'Session expired or revoked',
+                code: 'SESSION_INVALID'
+            });
+        }
+        
+        req.user = decoded;
+        req.session = session;
+        req.token = token;
+        next();
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+        }
+        return res.status(401).json({ error: 'Invalid token', code: 'TOKEN_INVALID' });
     }
 };
 
@@ -1250,7 +2165,30 @@ app.post('/api/auth/register',
     try {
         const { username, email, password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = await User.create({ username, email, password: hashedPassword, role: 'User' });
+        
+        // Generate email verification token
+        const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+        const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+        
+        const user = await User.create({ 
+            username, 
+            email, 
+            password: hashedPassword, 
+            role: 'User',
+            isEmailVerified: false,
+            emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
+            emailVerificationExpiry
+        });
+        
+        // Send verification email
+        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
+        try {
+            await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
+            logInfo('Verification email sent', { userId: user.id, email: user.email });
+        } catch (emailError) {
+            logWarn('Failed to send verification email', { error: emailError.message, userId: user.id });
+            // Continue registration even if email fails
+        }
         
         // Audit log: User registration
         await logAuditEvent({
@@ -1259,13 +2197,20 @@ app.post('/api/auth/register',
             user: { id: user.id, email: user.email, username: user.username, role: user.role },
             resourceType: 'USER',
             resourceId: user.id,
-            description: `New user registered: ${username} (${email})`,
+            description: `New user registered: ${username} (${email}) - Email verification pending`,
             request: req,
             status: 'SUCCESS'
         });
         logInfo('User registered successfully', { userId: user.id, username, email });
         
-        res.json({ id: user.id, username: user.username, email: user.email, role: user.role });
+        res.json({ 
+            id: user.id, 
+            username: user.username, 
+            email: user.email, 
+            role: user.role,
+            message: 'Registration successful! Please check your email to verify your account.',
+            emailVerificationRequired: true
+        });
     } catch (error) {
         // Audit log: Registration failed
         await logAuditEvent({
@@ -1372,6 +2317,27 @@ app.post('/api/auth/login',
         
         const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
         
+        // Create session in session store
+        const clientIP = getClientIP(req);
+        const userAgent = req.get('User-Agent');
+        
+        try {
+            await sessionService.createSession({
+                userId: user.id,
+                token,
+                userAgent,
+                ipAddress: clientIP
+            });
+        } catch (sessionError) {
+            logWarn('Failed to create session in store, continuing with JWT only', { 
+                error: sessionError.message, 
+                userId: user.id 
+            });
+        }
+        
+        // Update last login
+        await user.update({ lastLoginAt: new Date() });
+        
         // Audit log: Successful login
         await logAuditEvent({
             action: AuditActions.USER_LOGIN,
@@ -1381,7 +2347,11 @@ app.post('/api/auth/login',
             resourceId: user.id,
             description: `User logged in: ${username}`,
             request: req,
-            status: 'SUCCESS'
+            status: 'SUCCESS',
+            metadata: {
+                deviceInfo: parseUserAgent(userAgent),
+                ipAddress: clientIP
+            }
         });
         logInfo('User logged in successfully', { userId: user.id, username });
         
@@ -1389,6 +2359,144 @@ app.post('/api/auth/login',
     } catch (error) {
         logError('Login error', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Verify Email with token
+app.get('/api/auth/verify-email/:token', async (req, res) => {
+    try {
+        const { token } = req.params;
+        
+        if (!token) {
+            return res.status(400).json({ error: 'Verification token is required' });
+        }
+        
+        // Hash the provided token to compare with stored hash
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+        
+        // Find user with valid token
+        const user = await User.findOne({
+            where: {
+                emailVerificationToken: hashedToken,
+                emailVerificationExpiry: { [Op.gt]: new Date() }
+            }
+        });
+        
+        if (!user) {
+            await logAuditEvent({
+                action: 'EMAIL_VERIFICATION_FAILED',
+                category: AuditCategories.AUTH,
+                description: 'Invalid or expired email verification token used',
+                request: req,
+                status: 'FAILURE',
+                errorMessage: 'Invalid or expired token'
+            });
+            return res.status(400).json({ error: 'Invalid or expired verification token' });
+        }
+        
+        // Update user as verified
+        await user.update({
+            isEmailVerified: true,
+            emailVerificationToken: null,
+            emailVerificationExpiry: null
+        });
+        
+        // Send confirmation email
+        try {
+            await emailService.sendEmailVerifiedConfirmation(user.email, user.username);
+        } catch (emailError) {
+            logWarn('Failed to send verification confirmation email', { error: emailError.message });
+        }
+        
+        // Audit log
+        await logAuditEvent({
+            action: 'EMAIL_VERIFIED',
+            category: AuditCategories.AUTH,
+            user: { id: user.id, email: user.email, username: user.username, role: user.role },
+            resourceType: 'USER',
+            resourceId: user.id,
+            description: `Email verified for user: ${user.username}`,
+            request: req,
+            status: 'SUCCESS'
+        });
+        
+        logInfo('Email verified successfully', { userId: user.id, email: user.email });
+        
+        res.json({ 
+            message: 'Email verified successfully! You can now login.',
+            verified: true
+        });
+    } catch (error) {
+        logError('Email verification error', { error: error.message });
+        captureError(error, { action: 'verify-email' });
+        res.status(500).json({ error: 'Failed to verify email' });
+    }
+});
+
+// Resend verification email
+app.post('/api/auth/resend-verification',
+    authLimiter,
+    [
+        body('email').trim().isEmail().normalizeEmail().withMessage('Valid email is required')
+    ],
+    async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: errors.array()[0].msg });
+        }
+        
+        const { email } = req.body;
+        
+        const user = await User.findOne({ where: { email } });
+        
+        // Don't reveal if user exists for security
+        const successMessage = 'If your email is registered and not verified, you will receive a verification link.';
+        
+        if (!user) {
+            return res.json({ message: successMessage });
+        }
+        
+        // Check if already verified
+        if (user.isEmailVerified) {
+            return res.json({ message: 'Your email is already verified. You can login now.' });
+        }
+        
+        // Generate new verification token
+        const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+        const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+        
+        await user.update({
+            emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
+            emailVerificationExpiry
+        });
+        
+        // Send verification email
+        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
+        
+        try {
+            await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
+            
+            await logAuditEvent({
+                action: 'VERIFICATION_EMAIL_RESENT',
+                category: AuditCategories.AUTH,
+                user: { id: user.id, email: user.email, username: user.username },
+                resourceType: 'USER',
+                resourceId: user.id,
+                description: `Verification email resent to: ${user.email}`,
+                request: req,
+                status: 'SUCCESS'
+            });
+            
+            logInfo('Verification email resent', { userId: user.id, email: user.email });
+        } catch (emailError) {
+            logError('Failed to resend verification email', { error: emailError.message });
+        }
+        
+        res.json({ message: successMessage });
+    } catch (error) {
+        logError('Resend verification error', { error: error.message });
+        res.status(500).json({ error: 'Failed to process request' });
     }
 });
 
@@ -1731,97 +2839,318 @@ app.put('/api/users/notification-preferences', authMiddleware, async (req, res) 
     }
 });
 
-// Export user data
+// Export user data (GDPR Compliance)
 app.get('/api/users/export-data', authMiddleware, async (req, res) => {
     try {
         const user = await User.findByPk(req.user.id, {
-            attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry'] }
+            attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry', 'twoFactorSecret'] }
         });
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // Fetch all user data
+        logInfo('User data export requested', { userId: req.user.id, email: user.email });
+
+        // Fetch all user-related data from different tables
         const disputes = await Dispute.findAll({
             where: {
                 [Op.or]: [
                     { plaintiffEmail: user.email },
-                    { respondentEmail: user.email }
+                    { respondentEmail: user.email },
+                    { creatorId: req.user.id }
                 ]
-            },
-            include: [
-                { model: Message, as: 'messages' },
-                { model: Evidence, as: 'evidences' }
-            ]
+            }
         });
 
+        // Get all messages from user's disputes
+        const disputeIds = disputes.map(d => d.id);
+        const messages = disputeIds.length > 0 ? await Message.findAll({
+            where: { disputeId: { [Op.in]: disputeIds } }
+        }) : [];
+
+        // Get all evidence uploaded by the user
+        const evidence = disputeIds.length > 0 ? await Evidence.findAll({
+            where: { disputeId: { [Op.in]: disputeIds } }
+        }) : [];
+
+        // Get notifications
         const notifications = await Notification.findAll({
+            where: { userId: req.user.id },
+            order: [['createdAt', 'DESC']]
+        });
+
+        // Get notification preferences
+        const notificationPrefs = await NotificationPreferences.findOne({
             where: { userId: req.user.id }
         });
 
+        // Get audit logs (limited to last 500 for performance)
         const auditLogs = await AuditLog.findAll({
             where: { userId: req.user.id },
             order: [['createdAt', 'DESC']],
-            limit: 100
+            limit: 500
         });
 
+        // Get payment history if available
+        let payments = [];
+        try {
+            payments = await Payment.findAll({
+                where: { userId: req.user.id },
+                attributes: { exclude: ['stripeSessionId', 'stripePaymentIntentId'] }
+            });
+        } catch (e) {
+            // Payment table might not exist
+            logWarn('Could not fetch payment data', { error: e.message });
+        }
+
+        // Construct comprehensive export data
         const exportData = {
             exportedAt: new Date().toISOString(),
-            profile: {
+            exportVersion: '1.0',
+            dataRetentionPolicy: 'As per GDPR Article 17, you have the right to request deletion of this data at any time.',
+            
+            // Personal Information
+            personalInformation: {
+                userId: user.id,
                 username: user.username,
                 email: user.email,
                 phone: user.phone,
                 address: user.address,
                 occupation: user.occupation,
                 role: user.role,
+                profilePicture: user.profilePicture,
+                accountCreatedAt: user.createdAt,
+                lastUpdatedAt: user.updatedAt,
+                lastLoginAt: user.lastLoginAt,
+                lastActivityAt: user.lastActivityAt
+            },
+
+            // Verification Status
+            identityVerification: {
                 isVerified: user.isVerified,
                 verificationStatus: user.verificationStatus,
-                createdAt: user.createdAt,
-                updatedAt: user.updatedAt
+                idCardPath: user.idCardPath,
+                selfiePath: user.selfiePath,
+                verificationNotes: user.verificationNotes
             },
-            notificationPreferences: user.notificationPreferences ? JSON.parse(user.notificationPreferences) : {},
+
+            // Account Security
+            accountSecurity: {
+                twoFactorEnabled: user.twoFactorEnabled,
+                failedLoginAttempts: user.failedLoginAttempts,
+                lastFailedLogin: user.lastFailedLogin,
+                accountLockedUntil: user.accountLockedUntil,
+                isSuspended: user.isSuspended,
+                suspendedAt: user.suspendedAt,
+                suspendReason: user.suspendReason
+            },
+
+            // Privacy Settings
+            privacySettings: {
+                profileVisibility: user.profileVisibility,
+                showEmail: user.showEmail,
+                showPhone: user.showPhone
+            },
+
+            // Notification Preferences
+            notificationPreferences: notificationPrefs ? {
+                emailNotifications: notificationPrefs.emailNotifications,
+                inAppNotifications: notificationPrefs.inAppNotifications,
+                newDispute: notificationPrefs.newDispute,
+                caseAccepted: notificationPrefs.caseAccepted,
+                newMessage: notificationPrefs.newMessage,
+                aiAnalysisComplete: notificationPrefs.aiAnalysisComplete,
+                solutionVotes: notificationPrefs.solutionVotes,
+                caseResolved: notificationPrefs.caseResolved,
+                courtForwarding: notificationPrefs.courtForwarding,
+                evidenceUploaded: notificationPrefs.evidenceUploaded,
+                signatureRequired: notificationPrefs.signatureRequired,
+                systemAlerts: notificationPrefs.systemAlerts
+            } : user.notificationPreferences ? JSON.parse(user.notificationPreferences) : {},
+
+            // Disputes (Cases)
             disputes: disputes.map(d => ({
                 id: d.id,
                 title: d.title,
                 description: d.description,
                 status: d.status,
-                role: d.plaintiffEmail === user.email ? 'Plaintiff' : 'Defendant',
+                yourRole: d.plaintiffEmail === user.email ? 'Plaintiff' : 'Respondent',
+                
+                // Plaintiff details
+                plaintiffName: d.plaintiffName,
+                plaintiffEmail: d.plaintiffEmail,
+                plaintiffPhone: d.plaintiffPhone,
+                plaintiffAddress: d.plaintiffAddress,
+                plaintiffOccupation: d.plaintiffOccupation,
+                
+                // Respondent details
+                respondentName: d.respondentName,
+                respondentEmail: d.respondentEmail,
+                respondentPhone: d.respondentPhone,
+                respondentAddress: d.respondentAddress,
+                respondentOccupation: d.respondentOccupation,
+                respondentAccepted: d.respondentAccepted,
+                defendantStatement: d.defendantStatement,
+                
+                // AI Analysis
+                aiAnalysis: d.aiAnalysis,
+                aiSolutions: d.aiSolutions ? JSON.parse(d.aiSolutions) : null,
+                
+                // Decisions
+                plaintiffDecision: d.plaintiffDecision,
+                defendantDecision: d.defendantDecision,
+                plaintiffSolution: d.plaintiffSolution,
+                defendantSolution: d.defendantSolution,
+                
+                // Resolution
+                resolutionNotes: d.resolutionNotes,
+                resolvedAt: d.resolvedAt,
+                
+                // Court forwarding
+                forwardedToCourt: d.forwardedToCourt,
+                courtType: d.courtType,
+                courtName: d.courtName,
+                courtLocation: d.courtLocation,
+                courtReason: d.courtReason,
+                courtForwardedAt: d.courtForwardedAt,
+                
+                // Signatures
+                plaintiffSignature: d.plaintiffSignature,
+                defendantSignature: d.defendantSignature,
+                plaintiffSignedAt: d.plaintiffSignedAt,
+                defendantSignedAt: d.defendantSignedAt,
+                
+                // Metadata
+                reanalysisCount: d.reanalysisCount,
                 createdAt: d.createdAt,
-                messagesCount: d.messages?.length || 0,
-                evidenceCount: d.evidences?.length || 0
+                updatedAt: d.updatedAt
             })),
+
+            // Messages
+            messages: messages.map(m => ({
+                id: m.id,
+                disputeId: m.disputeId,
+                senderName: m.senderName,
+                content: m.content,
+                attachment: m.attachment,
+                isYourMessage: m.senderEmail === user.email,
+                createdAt: m.createdAt
+            })),
+
+            // Evidence Files
+            evidenceFiles: evidence.map(e => ({
+                id: e.id,
+                disputeId: e.disputeId,
+                fileName: e.fileName,
+                fileType: e.fileType,
+                filePath: e.filePath,
+                description: e.description,
+                uploadedBy: e.uploadedBy,
+                uploadedByRole: e.uploadedByRole,
+                isYourEvidence: e.uploadedBy === user.username || e.uploadedBy === user.email,
+                uploadedAt: e.createdAt
+            })),
+
+            // Notifications History
             notifications: notifications.map(n => ({
+                id: n.id,
                 type: n.type,
                 title: n.title,
                 message: n.message,
                 isRead: n.isRead,
+                metadata: n.metadata ? JSON.parse(n.metadata) : null,
                 createdAt: n.createdAt
             })),
-            activityLog: auditLogs.map(a => ({
-                action: a.action,
-                resourceType: a.resourceType,
-                createdAt: a.createdAt
-            }))
+
+            // Activity/Audit Logs
+            activityLogs: auditLogs.map(log => ({
+                action: log.action,
+                category: log.category,
+                resourceType: log.resourceType,
+                resourceId: log.resourceId,
+                description: log.description,
+                status: log.status,
+                ipAddress: log.ipAddress,
+                userAgent: log.userAgent,
+                timestamp: log.createdAt
+            })),
+
+            // Payment History
+            payments: payments.map(p => ({
+                id: p.id,
+                amount: p.amount,
+                currency: p.currency,
+                status: p.status,
+                description: p.description,
+                paymentDate: p.createdAt
+            })),
+
+            // Statistics
+            statistics: {
+                totalDisputes: disputes.length,
+                disputesAsPlaintiff: disputes.filter(d => d.plaintiffEmail === user.email).length,
+                disputesAsRespondent: disputes.filter(d => d.respondentEmail === user.email).length,
+                resolvedDisputes: disputes.filter(d => d.status === 'Resolved').length,
+                totalMessages: messages.filter(m => m.senderEmail === user.email).length,
+                totalEvidenceUploaded: evidence.filter(e => e.uploadedBy === user.username || e.uploadedBy === user.email).length,
+                totalPayments: payments.length,
+                totalNotifications: notifications.length,
+                unreadNotifications: notifications.filter(n => !n.isRead).length
+            },
+
+            // GDPR Information
+            gdprInformation: {
+                rightToAccess: 'You have the right to access your personal data at any time.',
+                rightToRectification: 'You have the right to correct inaccurate personal data.',
+                rightToErasure: 'You have the right to request deletion of your personal data (Right to be Forgotten).',
+                rightToRestriction: 'You have the right to restrict processing of your personal data.',
+                rightToDataPortability: 'You have the right to receive your personal data in a structured, commonly used format.',
+                rightToObject: 'You have the right to object to processing of your personal data.',
+                rightsRelatedToAutomatedDecision: 'You have rights related to automated decision-making and profiling.',
+                dataController: 'AI Dispute Resolution Platform',
+                contactEmail: 'privacy@aidispute.com',
+                lastUpdated: new Date().toISOString()
+            }
         };
 
-        // Log data export to audit trail
-        await AuditLog.create({
+        // Audit log: User exported their data
+        await logAuditEvent({
             action: 'DATA_EXPORTED',
-            category: 'USER',
-            resourceType: 'User',
+            category: AuditCategories.PRIVACY,
+            user: { id: user.id, email: user.email, username: user.username, role: user.role },
+            resourceType: 'USER',
             resourceId: user.id,
-            userId: req.user.id,
-            description: 'User exported their data',
-            metadata: { message: 'User data exported' },
-            ipAddress: req.ip,
-            userAgent: req.get('User-Agent')
+            description: `User ${user.username} exported their personal data (GDPR compliance)`,
+            request: req,
+            status: 'SUCCESS',
+            metadata: {
+                disputesCount: disputes.length,
+                messagesCount: messages.length,
+                evidenceCount: evidence.length,
+                notificationsCount: notifications.length,
+                auditLogsCount: auditLogs.length,
+                paymentsCount: payments.length
+            }
+        });
+
+        logInfo('User data export completed successfully', { 
+            userId: req.user.id, 
+            dataSize: JSON.stringify(exportData).length,
+            recordCounts: {
+                disputes: disputes.length,
+                messages: messages.length,
+                evidence: evidence.length,
+                notifications: notifications.length,
+                auditLogs: auditLogs.length,
+                payments: payments.length
+            }
         });
 
         res.json(exportData);
     } catch (error) {
-        console.error('Export data error:', error);
-        Sentry.captureException(error, { tags: { action: 'export_data' }, user: { id: req.user?.id } });
+        logError('Export data error', { error: error.message, userId: req.user?.id });
+        captureError(error, { userId: req.user?.id, action: 'export_data' });
         res.status(500).json({ error: 'Failed to export data' });
     }
 });
@@ -1911,23 +3240,18 @@ app.delete('/api/users/account', authMiddleware, async (req, res) => {
     }
 });
 
-// Get active sessions (simplified - in production, you'd use a session store)
+// ==================== SESSION MANAGEMENT ENDPOINTS ====================
+
+// Get active sessions for the authenticated user
 app.get('/api/users/sessions', authMiddleware, async (req, res) => {
     try {
-        // In a production app, you'd store sessions in Redis or database
-        // For now, return current session info
-        const sessions = [
-            {
-                id: 'current',
-                device: 'Current Session',
-                browser: req.get('User-Agent')?.split(' ').pop() || 'Unknown',
-                location: 'Current Location',
-                lastActive: new Date().toISOString(),
-                isCurrent: true
-            }
-        ];
-
-        res.json({ sessions });
+        const currentTokenHash = hashToken(req.token);
+        const sessions = await sessionService.getUserSessions(req.user.id, currentTokenHash);
+        
+        res.json({ 
+            sessions,
+            total: sessions.length 
+        });
     } catch (error) {
         console.error('Get sessions error:', error);
         Sentry.captureException(error, { tags: { action: 'get_sessions' }, user: { id: req.user?.id } });
@@ -1935,22 +3259,47 @@ app.get('/api/users/sessions', authMiddleware, async (req, res) => {
     }
 });
 
-// Revoke a session
+// Revoke a specific session
 app.delete('/api/users/sessions/:sessionId', authMiddleware, async (req, res) => {
     try {
         const { sessionId } = req.params;
         
-        // In a production app, you'd invalidate the session token here
-        // For now, just log the action
+        // Verify the session belongs to the user
+        const session = await Session.findOne({
+            where: { 
+                id: sessionId, 
+                userId: req.user.id,
+                isActive: true
+            }
+        });
+        
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+        
+        // Check if trying to revoke current session
+        const currentTokenHash = hashToken(req.token);
+        if (session.tokenHash === currentTokenHash) {
+            return res.status(400).json({ error: 'Cannot revoke current session. Use logout instead.' });
+        }
+        
+        // Revoke the session
+        await sessionService.revokeSession(sessionId, 'Manually revoked by user');
+
         await AuditLog.create({
             action: 'SESSION_REVOKED',
             category: 'AUTH',
-            resourceType: 'User',
-            resourceId: req.user.id,
+            resourceType: 'Session',
+            resourceId: sessionId,
             userId: req.user.id,
-            description: `User revoked session: ${sessionId}`,
-            metadata: { sessionId },
-            ipAddress: req.ip,
+            description: `User revoked session: ${session.deviceName} (${session.browser})`,
+            metadata: { 
+                sessionId,
+                deviceType: session.deviceType,
+                browser: session.browser,
+                ipAddress: session.ipAddress
+            },
+            ipAddress: getClientIP(req),
             userAgent: req.get('User-Agent')
         });
 
@@ -1961,6 +3310,77 @@ app.delete('/api/users/sessions/:sessionId', authMiddleware, async (req, res) =>
         res.status(500).json({ error: 'Failed to revoke session' });
     }
 });
+
+// Revoke all sessions except current (Logout from all devices)
+app.post('/api/users/sessions/revoke-all', authMiddleware, async (req, res) => {
+    try {
+        const currentTokenHash = hashToken(req.token);
+        const revokedCount = await sessionService.revokeAllUserSessions(req.user.id, currentTokenHash);
+
+        await AuditLog.create({
+            action: 'ALL_SESSIONS_REVOKED',
+            category: 'AUTH',
+            resourceType: 'User',
+            resourceId: req.user.id,
+            userId: req.user.id,
+            description: `User logged out from all devices (${revokedCount} sessions revoked)`,
+            metadata: { revokedCount },
+            ipAddress: getClientIP(req),
+            userAgent: req.get('User-Agent')
+        });
+
+        res.json({ 
+            message: 'Successfully logged out from all other devices',
+            revokedCount
+        });
+    } catch (error) {
+        console.error('Revoke all sessions error:', error);
+        Sentry.captureException(error, { tags: { action: 'revoke_all_sessions' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to revoke sessions' });
+    }
+});
+
+// Logout (revoke current session)
+app.post('/api/auth/logout', authMiddleware, async (req, res) => {
+    try {
+        await sessionService.revokeSessionByToken(req.token, 'User logout');
+
+        await AuditLog.create({
+            action: 'USER_LOGOUT',
+            category: 'AUTH',
+            resourceType: 'User',
+            resourceId: req.user.id,
+            userId: req.user.id,
+            description: 'User logged out',
+            ipAddress: getClientIP(req),
+            userAgent: req.get('User-Agent')
+        });
+
+        res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        console.error('Logout error:', error);
+        Sentry.captureException(error, { tags: { action: 'logout' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to logout' });
+    }
+});
+
+// Admin: Get session statistics
+app.get('/api/admin/sessions/stats', authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'Admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const stats = await sessionService.getSessionStats();
+        res.json(stats);
+    } catch (error) {
+        console.error('Get session stats error:', error);
+        Sentry.captureException(error, { tags: { action: 'get_session_stats' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to fetch session statistics' });
+    }
+});
+
+// ==================== END SESSION MANAGEMENT ====================
 
 // Get user's disputes
 app.get('/api/users/my-disputes', authMiddleware, async (req, res) => {
@@ -1989,10 +3409,23 @@ app.get('/api/users/my-disputes', authMiddleware, async (req, res) => {
 // ==================== PROFILE MANAGEMENT ENHANCEMENTS ====================
 
 // Upload profile picture
-app.post('/api/users/profile-picture', authMiddleware, upload.single('profilePicture'), async (req, res) => {
+app.post('/api/users/profile-picture', authMiddleware, uploadProfile.single('profilePicture'), handleMulterError, async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        // Additional validation: Check actual file type (magic number verification)
+        const fileBuffer = fs.readFileSync(req.file.path);
+        const fileTypeCheck = await import('file-type').then(m => m.fileTypeFromBuffer(fileBuffer)).catch(() => null);
+        
+        if (fileTypeCheck && !['image/jpeg', 'image/png', 'image/webp'].includes(fileTypeCheck.mime)) {
+            // Delete invalid file
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({ 
+                error: 'Invalid file type detected',
+                message: 'The uploaded file is not a valid image. Only JPEG, PNG, or WebP images are allowed.'
+            });
         }
 
         const user = await User.findByPk(req.user.id);
@@ -2763,7 +4196,14 @@ app.post('/api/disputes',
             respondentPhone,
             respondentAddress,
             respondentOccupation,
-            status: 'Pending' // Waiting for respondent to see and respond
+            status: 'Pending', // Waiting for respondent to see and respond
+            // ============ PAYMENT BYPASS FOR TESTING ============
+            // Remove these 4 lines when you want to enable payments again
+            paymentStatus: 'paid',
+            paidAt: new Date(),
+            paymentAmount: 0,
+            paymentCurrency: 'INR'
+            // ====================================================
         });
 
         // Audit log: Dispute created
@@ -3047,27 +4487,142 @@ app.post('/api/disputes/:id/messages',
 // Identity Verification Route
 app.post('/api/auth/verify', authMiddleware, upload.fields([{ name: 'idCard', maxCount: 1 }, { name: 'selfie', maxCount: 1 }]), async (req, res) => {
     try {
-        if (!req.files.idCard || !req.files.selfie) return res.status(400).json({ error: "Both ID Card and Selfie are required" });
+        if (!req.files.idCard || !req.files.selfie) {
+            return res.status(400).json({ error: "Both ID Card and Selfie are required" });
+        }
 
         const user = await User.findByPk(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
         const idCardPath = req.files.idCard[0].filename;
         const selfiePath = req.files.selfie[0].filename;
 
-        // AI Verification
-        console.log(`Verifying user ${user.username}...`);
-        const verification = await verifyIdentityWithAI(user.username, idCardPath, selfiePath);
-        console.log('Verification Result:', verification);
+        logInfo('Starting identity verification', { 
+            userId: user.id, 
+            username: user.username 
+        });
 
+        // Enhanced AI Verification with multiple steps
+        const verification = await verifyIdentityWithAI(user.username, idCardPath, selfiePath);
+        
+        logInfo('Verification completed', { 
+            userId: user.id, 
+            verified: verification.verified,
+            confidence: verification.confidence,
+            verificationId: verification.verificationId
+        });
+
+        // Update user record
         user.idCardPath = idCardPath;
         user.selfiePath = selfiePath;
         user.isVerified = verification.verified;
         user.verificationStatus = verification.verified ? 'Verified' : 'Rejected';
-        user.verificationNotes = verification.reason;
+        user.verificationNotes = JSON.stringify({
+            reason: verification.reason,
+            confidence: verification.confidence,
+            documentType: verification.documentType,
+            nameOnID: verification.nameOnID,
+            verificationId: verification.verificationId,
+            timestamp: new Date().toISOString(),
+            details: verification.details
+        });
         await user.save();
 
-        res.json({ user, verification });
+        // Audit log for identity verification
+        await logAuditEvent({
+            action: verification.verified ? AuditActions.IDENTITY_VERIFICATION_APPROVE : AuditActions.IDENTITY_VERIFICATION_REJECT,
+            category: AuditCategories.SECURITY,
+            user: { id: user.id, email: user.email, username: user.username },
+            resourceType: 'USER',
+            resourceId: user.id,
+            description: `Identity verification ${verification.verified ? 'PASSED' : 'FAILED'} for user ${user.username}. ${verification.reason}`,
+            metadata: {
+                verificationId: verification.verificationId,
+                verified: verification.verified,
+                confidence: verification.confidence,
+                documentType: verification.documentType,
+                step: verification.step,
+                faceMatch: verification.details?.faceComparison?.match,
+                faceConfidence: verification.details?.faceComparison?.confidence,
+                spoofingRisk: verification.details?.selfieAnalysis?.spoofingRisk,
+                processingTime: verification.details?.processingTime
+            },
+            request: req,
+            status: verification.verified ? 'SUCCESS' : 'FAILURE'
+        });
+
+        // Prepare response
+        const response = {
+            success: true,
+            user: {
+                id: user.id,
+                username: user.username,
+                isVerified: user.isVerified,
+                verificationStatus: user.verificationStatus
+            },
+            verification: {
+                verified: verification.verified,
+                reason: verification.reason,
+                confidence: verification.confidence,
+                documentType: verification.documentType,
+                nameOnID: verification.nameOnID,
+                verificationId: verification.verificationId,
+                details: {
+                    idDocument: verification.details?.idAnalysis ? {
+                        type: verification.details.idAnalysis.documentType,
+                        country: verification.details.idAnalysis.country,
+                        isValid: verification.details.idAnalysis.isValid,
+                        authenticityConfidence: verification.details.idAnalysis.authenticity?.confidence
+                    } : null,
+                    selfie: verification.details?.selfieAnalysis ? {
+                        isValid: verification.details.selfieAnalysis.isValid,
+                        spoofingRisk: verification.details.selfieAnalysis.spoofingRisk,
+                        quality: verification.details.selfieAnalysis.quality
+                    } : null,
+                    faceMatch: verification.details?.faceComparison ? {
+                        match: verification.details.faceComparison.match,
+                        confidence: verification.details.faceComparison.confidence,
+                        decision: verification.details.faceComparison.decision,
+                        similarity: verification.details.faceComparison.similarity
+                    } : null
+                }
+            }
+        };
+
+        res.json(response);
     } catch (e) {
-        console.error('Verify error:', e);
+        logError('Identity verification error', { error: e.message, stack: e.stack });
+        res.status(500).json({ error: "Verification failed. Please try again." });
+    }
+});
+
+// Get Verification Status
+app.get('/api/auth/verification-status', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findByPk(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        let verificationDetails = null;
+        if (user.verificationNotes) {
+            try {
+                verificationDetails = JSON.parse(user.verificationNotes);
+            } catch (e) {
+                verificationDetails = { reason: user.verificationNotes };
+            }
+        }
+
+        res.json({
+            isVerified: user.isVerified,
+            verificationStatus: user.verificationStatus,
+            hasIdCard: !!user.idCardPath,
+            hasSelfie: !!user.selfiePath,
+            details: verificationDetails
+        });
+    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
@@ -3127,6 +4682,18 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                 dispute.resolutionNotes = `Agreed on: ${chosenSolution.title}. Proceeding to formal verification and signing.`;
 
                 await dispute.save();
+                
+                // Emit real-time update for agreement reached
+                const io = global.io;
+                if (io) {
+                    io.to(`dispute:${dispute.id}`).emit('dispute:status-changed', {
+                        disputeId: dispute.id,
+                        status: dispute.status,
+                        resolutionStatus: dispute.resolutionStatus,
+                        agreedSolution: chosenSolution
+                    });
+                }
+                
                 return res.json({ dispute, message: `Agreement reached! Please proceed to the Resolution Step to verify details and sign.` });
             }
             // Case 2: Mismatch or Rejection
@@ -3139,6 +4706,16 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                     dispute.aiSolutions = null;
                     dispute.status = 'Reanalyzing';
                     await dispute.save();
+                    
+                    // Emit status change for reanalyzing
+                    const ioReanalyze = global.io;
+                    if (ioReanalyze) {
+                        ioReanalyze.to(`dispute:${dispute.id}`).emit('dispute:status-changed', {
+                            disputeId: dispute.id,
+                            status: 'Reanalyzing',
+                            message: 'AI is generating new solutions...'
+                        });
+                    }
 
                     // Trigger reanalysis with context of failure
                     const messages = await Message.findAll({
@@ -3152,6 +4729,17 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                         dispute.aiSolutions = JSON.stringify(analysis.solutions);
                         dispute.status = 'AwaitingDecision';
                         await dispute.save();
+                        
+                        // Emit real-time update for reanalysis
+                        const io = global.io;
+                        if (io) {
+                            io.to(`dispute:${dispute.id}`).emit('dispute:ai-ready', {
+                                disputeId: dispute.id,
+                                status: dispute.status,
+                                aiSolutions: analysis.solutions,
+                                isReanalysis: true
+                            });
+                        }
                         
                         // Send email notification to both parties about reanalysis
                         await emailService.notifyReanalysisRequested(dispute, dispute.reanalysisCount);
@@ -3169,6 +4757,17 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                     dispute.courtReason = 'Parties could not agree on AI-mediated solutions after two rounds. Forwarded for judicial review.';
                     dispute.status = 'ForwardedToCourt';
                     await dispute.save();
+                    
+                    // Emit real-time update for court forwarding
+                    const io = global.io;
+                    if (io) {
+                        io.to(`dispute:${dispute.id}`).emit('dispute:status-changed', {
+                            disputeId: dispute.id,
+                            status: dispute.status,
+                            forwardedToCourt: true,
+                            courtType
+                        });
+                    }
 
                     return res.json({
                         dispute,
@@ -3176,6 +4775,17 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                     });
                 }
             }
+        }
+        
+        // Emit real-time update for vote recorded
+        const io = global.io;
+        if (io) {
+            io.to(`dispute:${dispute.id}`).emit('dispute:vote-recorded', {
+                disputeId: dispute.id,
+                plaintiffChoice: dispute.plaintiffChoice,
+                defendantChoice: dispute.defendantChoice,
+                voterRole: isPlaintiff ? 'plaintiff' : 'defendant'
+            });
         }
 
         res.json({ dispute, message: 'Choice recorded. Waiting for other party.' });
@@ -3326,6 +4936,77 @@ app.get('/api/disputes/:id', async (req, res) => {
     }
 });
 
+// Test endpoint to check AI status and force reanalysis (development only)
+app.post('/api/disputes/:id/force-ai-analysis', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const dispute = await Dispute.findByPk(id);
+        
+        if (!dispute) {
+            return res.status(404).json({ error: 'Dispute not found' });
+        }
+        
+        // Check if user is a party to this dispute or admin
+        const user = await User.findByPk(req.user.id);
+        if (!user.isAdmin && dispute.plaintiffId !== req.user.id && dispute.respondentId !== req.user.id) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        console.log('=== Force AI Analysis Requested ===');
+        console.log('Dispute ID:', id);
+        console.log('API_KEY configured:', API_KEY !== 'API_KEY_MISSING');
+        
+        const messages = await Message.findAll({
+            where: { disputeId: id },
+            order: [['createdAt', 'ASC']]
+        });
+        
+        console.log('Message count:', messages.length);
+        
+        // Clear existing AI solutions to force reanalysis
+        dispute.aiSolutions = null;
+        dispute.aiAnalysis = null;
+        await dispute.save();
+        
+        // Trigger AI analysis
+        const analysis = await analyzeDisputeWithAI(dispute, messages, true);
+        
+        if (analysis) {
+            dispute.aiAnalysis = analysis.summary + '\n\n' + analysis.legalAssessment;
+            dispute.aiSolutions = JSON.stringify(analysis.solutions);
+            dispute.status = 'AwaitingDecision';
+            await dispute.save();
+            
+            // Emit real-time update
+            const io = global.io;
+            if (io) {
+                io.to(`dispute:${id}`).emit('dispute:ai-ready', {
+                    disputeId: dispute.id,
+                    status: dispute.status,
+                    aiSolutions: analysis.solutions
+                });
+            }
+            
+            res.json({
+                success: true,
+                message: 'AI analysis completed successfully',
+                isAIGenerated: true,
+                solutions: analysis.solutions
+            });
+        } else {
+            res.json({
+                success: false,
+                message: 'AI analysis failed - check server logs for details',
+                isAIGenerated: false,
+                apiKeyConfigured: API_KEY !== 'API_KEY_MISSING'
+            });
+        }
+    } catch (error) {
+        console.error('Force AI Analysis Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.put('/api/disputes/:id', authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'Admin') return res.status(403).json({ error: 'Admin access required' });
@@ -3391,7 +5072,7 @@ app.get('/api/disputes/:id/history', authMiddleware, async (req, res) => {
 // --- Evidence Management Routes ---
 
 // Upload Evidence
-app.post('/api/disputes/:id/evidence', authMiddleware, upload.single('evidence'), async (req, res) => {
+app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('evidence'), handleMulterError, async (req, res) => {
     try {
         const dispute = await Dispute.findByPk(req.params.id);
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
@@ -3410,6 +5091,15 @@ app.post('/api/disputes/:id/evidence', authMiddleware, upload.single('evidence')
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
+        
+        // Log file upload for security audit
+        logInfo('Evidence file uploaded', {
+            disputeId: dispute.id,
+            userId: req.user.id,
+            filename: req.file.filename,
+            size: req.file.size,
+            mimetype: req.file.mimetype
+        });
 
         // Determine file type from mime type
         let fileType = 'document';
@@ -3491,9 +5181,30 @@ app.post('/api/disputes/:id/evidence', authMiddleware, upload.single('evidence')
             );
         }
 
+        // Trigger OCR processing in background for supported file types
+        if (isOcrSupported(req.file.mimetype)) {
+            // Process OCR asynchronously (don't await)
+            processEvidenceOcr(evidence.id).then(result => {
+                if (result.success && result.status === 'completed') {
+                    // Emit OCR completion event
+                    emitToDispute(dispute.id, 'ocrCompleted', {
+                        evidenceId: evidence.id,
+                        hasText: result.text && result.text.length > 0,
+                        wordCount: result.wordCount
+                    });
+                }
+            }).catch(err => {
+                logError('Background OCR failed', { evidenceId: evidence.id, error: err.message });
+            });
+        } else {
+            // Mark as not applicable for non-image files
+            evidence.update({ ocrStatus: 'not_applicable' }).catch(() => {});
+        }
+
         res.status(201).json({ 
             message: 'Evidence uploaded successfully', 
-            evidence 
+            evidence,
+            ocrStatus: isOcrSupported(req.file.mimetype) ? 'processing' : 'not_applicable'
         });
     } catch (error) {
         logError('Evidence upload failed', { error: error.message, disputeId: req.params.id });
@@ -3546,6 +5257,170 @@ app.get('/api/disputes/:id/evidence', authMiddleware, async (req, res) => {
         });
     } catch (error) {
         logError('Failed to fetch evidence', { error: error.message, disputeId: req.params.id });
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Download Evidence File
+app.get('/api/disputes/:id/evidence/:evidenceId/download', authMiddlewareForMedia, async (req, res) => {
+    try {
+        const evidence = await Evidence.findByPk(req.params.evidenceId);
+        if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
+
+        if (evidence.disputeId !== parseInt(req.params.id)) {
+            return res.status(400).json({ error: 'Evidence does not belong to this dispute' });
+        }
+
+        // Verify user has access to this dispute
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this evidence' });
+        }
+
+        const filePath = path.join(process.cwd(), 'uploads', evidence.fileName);
+        
+        if (!fs.existsSync(filePath)) {
+            logError('Evidence file not found on disk', { evidenceId: evidence.id, filePath });
+            return res.status(404).json({ error: 'Evidence file not found' });
+        }
+
+        // Set headers for download
+        res.setHeader('Content-Type', evidence.mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(evidence.originalName)}"`);
+        res.setHeader('Content-Length', evidence.fileSize);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        
+        // Stream the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+
+        // Log download
+        await logAuditEvent({
+            action: 'EVIDENCE_DOWNLOAD',
+            category: AuditCategories.DISPUTE,
+            user: { id: req.user.id },
+            resourceType: 'EVIDENCE',
+            resourceId: evidence.id,
+            description: `User downloaded evidence "${evidence.originalName}" from case #${evidence.disputeId}`,
+            metadata: {
+                disputeId: evidence.disputeId,
+                fileName: evidence.originalName,
+                fileSize: evidence.fileSize
+            },
+            request: req,
+            status: 'SUCCESS'
+        });
+
+    } catch (error) {
+        logError('Evidence download failed', { error: error.message, evidenceId: req.params.evidenceId });
+        res.status(500).json({ error: 'Failed to download evidence' });
+    }
+});
+
+// Preview Evidence File (inline viewing)
+app.get('/api/disputes/:id/evidence/:evidenceId/preview', authMiddlewareForMedia, async (req, res) => {
+    try {
+        const evidence = await Evidence.findByPk(req.params.evidenceId);
+        if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
+
+        if (evidence.disputeId !== parseInt(req.params.id)) {
+            return res.status(400).json({ error: 'Evidence does not belong to this dispute' });
+        }
+
+        // Verify user has access to this dispute
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this evidence' });
+        }
+
+        const filePath = path.join(process.cwd(), 'uploads', evidence.fileName);
+        
+        if (!fs.existsSync(filePath)) {
+            logError('Evidence file not found on disk', { evidenceId: evidence.id, filePath });
+            return res.status(404).json({ error: 'Evidence file not found' });
+        }
+
+        // Allowed preview types
+        const previewableTypes = [
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+            'application/pdf',
+            'video/mp4', 'video/webm',
+            'audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/ogg'
+        ];
+
+        if (!previewableTypes.includes(evidence.mimeType)) {
+            return res.status(400).json({ 
+                error: 'This file type cannot be previewed. Please download it instead.',
+                canPreview: false 
+            });
+        }
+
+        // Set headers for inline viewing
+        res.setHeader('Content-Type', evidence.mimeType);
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(evidence.originalName)}"`);
+        res.setHeader('Content-Length', evidence.fileSize);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'private, max-age=3600'); // Cache for 1 hour
+        
+        // Stream the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+
+    } catch (error) {
+        logError('Evidence preview failed', { error: error.message, evidenceId: req.params.evidenceId });
+        res.status(500).json({ error: 'Failed to preview evidence' });
+    }
+});
+
+// Get single evidence metadata
+app.get('/api/disputes/:id/evidence/:evidenceId', authMiddleware, async (req, res) => {
+    try {
+        const evidence = await Evidence.findByPk(req.params.evidenceId);
+        if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
+
+        if (evidence.disputeId !== parseInt(req.params.id)) {
+            return res.status(400).json({ error: 'Evidence does not belong to this dispute' });
+        }
+
+        // Verify user has access to this dispute
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this evidence' });
+        }
+
+        // Determine if file can be previewed
+        const previewableTypes = [
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+            'application/pdf',
+            'video/mp4', 'video/webm',
+            'audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/ogg'
+        ];
+
+        res.json({
+            evidence: {
+                ...evidence.toJSON(),
+                canPreview: previewableTypes.includes(evidence.mimeType),
+                previewUrl: `/api/disputes/${evidence.disputeId}/evidence/${evidence.id}/preview`,
+                downloadUrl: `/api/disputes/${evidence.disputeId}/evidence/${evidence.id}/download`
+            }
+        });
+    } catch (error) {
+        logError('Failed to fetch evidence', { error: error.message, evidenceId: req.params.evidenceId });
         res.status(500).json({ error: error.message });
     }
 });
@@ -3607,6 +5482,211 @@ app.delete('/api/disputes/:id/evidence/:evidenceId', authMiddleware, async (req,
         res.status(500).json({ error: error.message });
     }
 });
+
+// ==================== OCR ENDPOINTS ====================
+
+// Get OCR text for evidence
+app.get('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (req, res) => {
+    try {
+        const evidence = await Evidence.findByPk(req.params.evidenceId);
+        if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
+
+        if (evidence.disputeId !== parseInt(req.params.id)) {
+            return res.status(400).json({ error: 'Evidence does not belong to this dispute' });
+        }
+
+        // Verify user has access
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        const isAdmin = req.user.role === 'Admin';
+        const currentUser = await User.findByPk(req.user.id);
+        const isParty = currentUser.email === dispute.plaintiffEmail || 
+                       currentUser.email === dispute.respondentEmail;
+
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this evidence' });
+        }
+
+        res.json({
+            evidenceId: evidence.id,
+            originalName: evidence.originalName,
+            ocrStatus: evidence.ocrStatus,
+            ocrText: evidence.ocrText,
+            ocrProcessedAt: evidence.ocrProcessedAt,
+            ocrError: evidence.ocrError,
+            isSupported: isOcrSupported(evidence.mimeType)
+        });
+    } catch (error) {
+        logError('Failed to get OCR text', { error: error.message, evidenceId: req.params.evidenceId });
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Trigger OCR processing for evidence (manual or retry)
+app.post('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (req, res) => {
+    try {
+        const evidence = await Evidence.findByPk(req.params.evidenceId);
+        if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
+
+        if (evidence.disputeId !== parseInt(req.params.id)) {
+            return res.status(400).json({ error: 'Evidence does not belong to this dispute' });
+        }
+
+        // Verify user has access
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        const isAdmin = req.user.role === 'Admin';
+        const currentUser = await User.findByPk(req.user.id);
+        const isParty = currentUser.email === dispute.plaintiffEmail || 
+                       currentUser.email === dispute.respondentEmail;
+
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to process this evidence' });
+        }
+
+        // Check if file type supports OCR
+        if (!isOcrSupported(evidence.mimeType)) {
+            return res.status(400).json({ 
+                error: 'File type not supported for OCR', 
+                mimeType: evidence.mimeType,
+                supported: OCR_SUPPORTED_MIMETYPES
+            });
+        }
+
+        // Check if already processing
+        if (evidence.ocrStatus === 'processing') {
+            return res.status(400).json({ error: 'OCR is already in progress' });
+        }
+
+        // Process OCR
+        const result = await processEvidenceOcr(evidence.id);
+
+        if (result.success) {
+            // Emit OCR completion event
+            const emitToDispute = req.app.get('emitToDispute');
+            if (result.status === 'completed') {
+                emitToDispute(dispute.id, 'ocrCompleted', {
+                    evidenceId: evidence.id,
+                    hasText: result.text && result.text.length > 0,
+                    wordCount: result.wordCount
+                });
+            }
+
+            // Audit log
+            await logAuditEvent({
+                action: 'OCR_PROCESS',
+                category: AuditCategories.DISPUTE,
+                user: { id: currentUser.id, email: currentUser.email, username: currentUser.username },
+                resourceType: 'EVIDENCE',
+                resourceId: evidence.id,
+                description: `OCR processed for evidence "${evidence.originalName}" in case #${dispute.id}`,
+                metadata: {
+                    status: result.status,
+                    wordCount: result.wordCount,
+                    confidence: result.confidence
+                },
+                request: req,
+                status: 'SUCCESS'
+            });
+
+            res.json({
+                message: 'OCR processing completed',
+                status: result.status,
+                text: result.text,
+                wordCount: result.wordCount,
+                confidence: result.confidence
+            });
+        } else {
+            res.status(500).json({ 
+                error: 'OCR processing failed', 
+                details: result.error 
+            });
+        }
+    } catch (error) {
+        logError('OCR processing request failed', { error: error.message, evidenceId: req.params.evidenceId });
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Batch OCR processing for all evidence in a dispute
+app.post('/api/disputes/:id/ocr/process-all', authMiddleware, async (req, res) => {
+    try {
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        // Only admin or parties can trigger batch OCR
+        const isAdmin = req.user.role === 'Admin';
+        const currentUser = await User.findByPk(req.user.id);
+        const isParty = currentUser.email === dispute.plaintiffEmail || 
+                       currentUser.email === dispute.respondentEmail;
+
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized' });
+        }
+
+        // Find all evidence that needs OCR processing
+        const evidenceList = await Evidence.findAll({
+            where: {
+                disputeId: dispute.id,
+                ocrStatus: ['pending', 'failed']
+            }
+        });
+
+        // Filter to only OCR-supported files
+        const ocrCandidates = evidenceList.filter(e => isOcrSupported(e.mimeType));
+
+        if (ocrCandidates.length === 0) {
+            return res.json({ message: 'No evidence files need OCR processing', processed: 0 });
+        }
+
+        // Process each in background
+        const results = {
+            queued: ocrCandidates.length,
+            evidenceIds: ocrCandidates.map(e => e.id)
+        };
+
+        // Start processing in background
+        ocrCandidates.forEach(evidence => {
+            processEvidenceOcr(evidence.id).then(result => {
+                if (result.success && result.status === 'completed') {
+                    const emitToDispute = req.app.get('emitToDispute');
+                    emitToDispute(dispute.id, 'ocrCompleted', {
+                        evidenceId: evidence.id,
+                        hasText: result.text && result.text.length > 0,
+                        wordCount: result.wordCount
+                    });
+                }
+            }).catch(err => {
+                logError('Batch OCR failed for evidence', { evidenceId: evidence.id, error: err.message });
+            });
+        });
+
+        // Audit log
+        await logAuditEvent({
+            action: 'OCR_BATCH_PROCESS',
+            category: AuditCategories.DISPUTE,
+            user: { id: currentUser.id, email: currentUser.email, username: currentUser.username },
+            resourceType: 'DISPUTE',
+            resourceId: dispute.id,
+            description: `Batch OCR processing started for ${ocrCandidates.length} files in case #${dispute.id}`,
+            metadata: { evidenceIds: results.evidenceIds },
+            request: req,
+            status: 'SUCCESS'
+        });
+
+        res.json({
+            message: `OCR processing started for ${ocrCandidates.length} files`,
+            ...results
+        });
+    } catch (error) {
+        logError('Batch OCR request failed', { error: error.message, disputeId: req.params.id });
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== END OCR ENDPOINTS ====================
 
 // --- New Resolution Routes ---
 
@@ -4203,6 +6283,567 @@ async function generateAgreementPDF(dispute, outputPath) {
     });
 }
 
+// Helper: Generate Case Summary PDF (can be generated at any stage)
+async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], auditLogs = []) {
+    logInfo('Starting PDF generation', { disputeId: dispute?.id, messagesCount: messages?.length, evidenceCount: evidence?.length });
+    
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Validate dispute exists
+            if (!dispute) {
+                logError('PDF generation failed: dispute is null/undefined');
+                return reject(new Error('Dispute data is required for PDF generation'));
+            }
+
+            const doc = new PDFDocument({ margin: 50, size: 'A4' });
+            const chunks = [];
+            
+            doc.on('data', chunk => chunks.push(chunk));
+            doc.on('end', () => {
+                logInfo('PDF generation complete', { disputeId: dispute.id, bufferSize: chunks.reduce((acc, c) => acc + c.length, 0) });
+                resolve(Buffer.concat(chunks));
+            });
+            doc.on('error', (err) => {
+                logError('PDFDocument error event', { error: err.message, disputeId: dispute.id });
+                reject(err);
+            });
+
+            // Generate metadata
+            const documentId = uuidv4();
+            const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            const timestampISO = new Date().toISOString();
+
+            // Helper functions for consistent formatting
+            const addTitle = (text, size = 16) => {
+                doc.fontSize(size).font('Helvetica-Bold').text(text, { align: 'center' });
+                doc.moveDown(0.5);
+            };
+
+            const addSectionHeader = (text) => {
+                doc.fontSize(12).font('Helvetica-Bold').fillColor('#1e40af').text(text);
+                doc.fillColor('black');
+                doc.moveDown(0.3);
+            };
+
+            const addSubHeader = (text) => {
+                doc.fontSize(11).font('Helvetica-Bold').text(text);
+                doc.moveDown(0.2);
+            };
+
+            const addBulletPoint = (label, value, indent = 0) => {
+                doc.fontSize(10).font('Helvetica-Bold').text(`${label}: `, { continued: true, indent });
+                doc.font('Helvetica').text(value || 'N/A');
+                doc.moveDown(0.15);
+            };
+
+            const addNormalText = (text, options = {}) => {
+                doc.fontSize(10).font('Helvetica').text(text, options);
+                doc.moveDown(0.3);
+            };
+
+            const addSeparator = () => {
+                const y = doc.y;
+                doc.strokeColor('#e5e7eb').moveTo(50, y).lineTo(doc.page.width - 50, y).stroke();
+                doc.strokeColor('black');
+                doc.moveDown(0.5);
+            };
+
+            // Status colors and labels
+            const getStatusInfo = (status) => {
+                const statusMap = {
+                    'Pending': { label: 'Pending Review', color: '#f59e0b' },
+                    'Active': { label: 'Active - In Mediation', color: '#3b82f6' },
+                    'Analyzed': { label: 'AI Analysis Complete', color: '#8b5cf6' },
+                    'AwaitingDecision': { label: 'Awaiting Party Decision', color: '#f97316' },
+                    'AwaitingSignatures': { label: 'Awaiting Signatures', color: '#06b6d4' },
+                    'AdminReview': { label: 'Admin Review', color: '#6366f1' },
+                    'Resolved': { label: 'Resolved', color: '#10b981' },
+                    'ForwardedToCourt': { label: 'Forwarded to Court', color: '#ef4444' }
+                };
+                return statusMap[status] || { label: status, color: '#6b7280' };
+            };
+
+            const statusInfo = getStatusInfo(dispute.status);
+
+            // ===== PAGE 1: COVER PAGE =====
+            doc.moveDown(2);
+            
+            // Header with logo placeholder
+            doc.fontSize(24).font('Helvetica-Bold').fillColor('#1e40af').text('MediaAI', { align: 'center' });
+            doc.fontSize(12).font('Helvetica').fillColor('#6b7280').text('AI-Powered Dispute Resolution Platform', { align: 'center' });
+            doc.fillColor('black');
+            doc.moveDown(2);
+
+            addTitle('CASE SUMMARY REPORT', 20);
+            doc.moveDown(0.5);
+            
+            // Case ID Box
+            doc.rect(150, doc.y, 295, 40).fillAndStroke('#f3f4f6', '#e5e7eb');
+            doc.fillColor('black').fontSize(14).font('Helvetica-Bold').text(`Case #${dispute.id}`, 0, doc.y + 12, { align: 'center' });
+            doc.moveDown(2.5);
+
+            // Status Badge
+            doc.fontSize(12).font('Helvetica-Bold').text('Current Status: ', { continued: true, align: 'center' });
+            doc.fillColor(statusInfo.color).text(statusInfo.label, { align: 'center' });
+            doc.fillColor('black');
+            doc.moveDown(2);
+
+            addSeparator();
+
+            // Document Info
+            addSectionHeader('DOCUMENT INFORMATION');
+            addBulletPoint('Report Type', 'Case Summary Report');
+            addBulletPoint('Document ID', documentId);
+            addBulletPoint('Generated On', timestamp + ' IST');
+            addBulletPoint('Case Reference', `MEDIAAI-CASE-${dispute.id}`);
+            doc.moveDown(1);
+
+            // ===== PAGE 2: PARTY DETAILS =====
+            doc.addPage();
+            
+            addSectionHeader('1. PARTY DETAILS');
+            doc.moveDown(0.3);
+
+            // Complainant
+            addSubHeader('COMPLAINANT (Party A)');
+            addBulletPoint('Full Name', dispute.plaintiffName);
+            addBulletPoint('Email', dispute.plaintiffEmail);
+            addBulletPoint('Phone', dispute.plaintiffPhone);
+            addBulletPoint('Address', dispute.plaintiffAddress);
+            addBulletPoint('Occupation', dispute.plaintiffOccupation);
+            doc.moveDown(0.5);
+
+            // Respondent
+            addSubHeader('RESPONDENT (Party B)');
+            addBulletPoint('Full Name', dispute.respondentName);
+            addBulletPoint('Email', dispute.respondentEmail);
+            addBulletPoint('Phone', dispute.respondentPhone);
+            addBulletPoint('Address', dispute.respondentAddress);
+            addBulletPoint('Occupation', dispute.respondentOccupation);
+            doc.moveDown(1);
+
+            addSeparator();
+
+            // ===== CASE DETAILS =====
+            addSectionHeader('2. CASE DETAILS');
+            addBulletPoint('Case Title', dispute.title);
+            addBulletPoint('Filed On', new Date(dispute.createdAt).toLocaleDateString('en-IN'));
+            addBulletPoint('Last Updated', new Date(dispute.updatedAt).toLocaleDateString('en-IN'));
+            addBulletPoint('Status', statusInfo.label);
+            addBulletPoint('Resolution Mode', 'AI-Assisted Mediation');
+            doc.moveDown(0.5);
+
+            addSubHeader('Case Description');
+            addNormalText(dispute.description || 'No description provided.');
+            doc.moveDown(1);
+
+            addSeparator();
+
+            // ===== AI ANALYSIS =====
+            if (dispute.aiAnalysis) {
+                addSectionHeader('3. AI ANALYSIS');
+                
+                try {
+                    // Try to parse if it's JSON
+                    const analysis = typeof dispute.aiAnalysis === 'string' && dispute.aiAnalysis.startsWith('{') 
+                        ? JSON.parse(dispute.aiAnalysis) 
+                        : { summary: dispute.aiAnalysis };
+                    
+                    if (analysis.summary) {
+                        addSubHeader('Summary');
+                        addNormalText(analysis.summary);
+                    }
+                    
+                    if (analysis.keyPoints && Array.isArray(analysis.keyPoints)) {
+                        addSubHeader('Key Points');
+                        analysis.keyPoints.forEach((point, i) => {
+                            doc.fontSize(10).font('Helvetica').text(`${i + 1}. ${point}`);
+                            doc.moveDown(0.15);
+                        });
+                    }
+                } catch (e) {
+                    // Plain text analysis
+                    const analysisText = String(dispute.aiAnalysis).substring(0, 2000);
+                    addNormalText(analysisText + (dispute.aiAnalysis.length > 2000 ? '...' : ''));
+                }
+                doc.moveDown(1);
+                addSeparator();
+            }
+
+            // ===== PROPOSED SOLUTIONS =====
+            if (dispute.aiSolutions) {
+                doc.addPage();
+                addSectionHeader('4. PROPOSED SOLUTIONS');
+                
+                try {
+                    const solutions = JSON.parse(dispute.aiSolutions);
+                    solutions.forEach((solution, index) => {
+                        const isChosen = dispute.plaintiffChoice === index || dispute.respondentChoice === index;
+                        
+                        addSubHeader(`Option ${index + 1}: ${solution.title}${isChosen ? ' ✓ (Selected)' : ''}`);
+                        addNormalText(solution.description);
+                        
+                        if (solution.pros && Array.isArray(solution.pros)) {
+                            doc.fontSize(10).font('Helvetica-Bold').text('Pros:', { indent: 10 });
+                            solution.pros.forEach(pro => {
+                                doc.fontSize(9).font('Helvetica').text(`  • ${pro}`, { indent: 15 });
+                            });
+                            doc.moveDown(0.2);
+                        }
+                        
+                        if (solution.cons && Array.isArray(solution.cons)) {
+                            doc.fontSize(10).font('Helvetica-Bold').text('Cons:', { indent: 10 });
+                            solution.cons.forEach(con => {
+                                doc.fontSize(9).font('Helvetica').text(`  • ${con}`, { indent: 15 });
+                            });
+                        }
+                        doc.moveDown(0.5);
+                    });
+                } catch (e) {
+                    addNormalText('Solutions data not available in expected format.');
+                }
+                doc.moveDown(0.5);
+                addSeparator();
+            }
+
+            // ===== EVIDENCE SUMMARY =====
+            if (evidence.length > 0) {
+                addSectionHeader('5. EVIDENCE SUBMITTED');
+                addNormalText(`Total files submitted: ${evidence.length}`);
+                doc.moveDown(0.3);
+
+                evidence.slice(0, 15).forEach((item, index) => {
+                    doc.fontSize(9).font('Helvetica-Bold').text(`${index + 1}. ${item.originalName}`, { continued: true });
+                    doc.font('Helvetica').text(` (${item.fileType}, ${(item.fileSize / 1024).toFixed(1)} KB)`);
+                    if (item.description) {
+                        doc.fontSize(8).font('Helvetica-Oblique').text(`   "${item.description}"`, { indent: 15 });
+                    }
+                    doc.moveDown(0.1);
+                });
+
+                if (evidence.length > 15) {
+                    doc.fontSize(9).font('Helvetica-Oblique').text(`... and ${evidence.length - 15} more files`);
+                }
+                doc.moveDown(1);
+                addSeparator();
+            }
+
+            // ===== COMMUNICATION SUMMARY =====
+            if (messages.length > 0) {
+                addSectionHeader('6. COMMUNICATION SUMMARY');
+                addBulletPoint('Total Messages', messages.length.toString());
+                addBulletPoint('Date Range', `${new Date(messages[0]?.createdAt).toLocaleDateString('en-IN')} - ${new Date(messages[messages.length - 1]?.createdAt).toLocaleDateString('en-IN')}`);
+                doc.moveDown(0.5);
+                
+                // Show last 5 messages
+                addSubHeader('Recent Communications');
+                const recentMessages = messages.slice(-5);
+                recentMessages.forEach(msg => {
+                    doc.fontSize(9).font('Helvetica-Bold').text(`${msg.senderName || 'Unknown'}`, { continued: true });
+                    doc.font('Helvetica').text(` (${new Date(msg.createdAt).toLocaleString('en-IN')}):`);
+                    doc.fontSize(9).font('Helvetica').text(msg.content.substring(0, 200) + (msg.content.length > 200 ? '...' : ''), { indent: 10 });
+                    doc.moveDown(0.3);
+                });
+                doc.moveDown(1);
+                addSeparator();
+            }
+
+            // ===== RESOLUTION STATUS =====
+            doc.addPage();
+            addSectionHeader('7. RESOLUTION STATUS');
+            
+            addBulletPoint('Current Status', statusInfo.label);
+            addBulletPoint('Complainant Confirmed Details', dispute.plaintiffConfirmed ? 'Yes' : 'No');
+            addBulletPoint('Respondent Confirmed Details', dispute.respondentConfirmed ? 'Yes' : 'No');
+            addBulletPoint('Complainant Choice', dispute.plaintiffChoice !== null ? `Option ${dispute.plaintiffChoice + 1}` : 'Pending');
+            addBulletPoint('Respondent Choice', dispute.respondentChoice !== null ? `Option ${dispute.respondentChoice + 1}` : 'Pending');
+            addBulletPoint('Complainant Signed', dispute.plaintiffSignature ? 'Yes' : 'No');
+            addBulletPoint('Respondent Signed', dispute.respondentSignature ? 'Yes' : 'No');
+
+            if (dispute.resolutionNotes) {
+                doc.moveDown(0.5);
+                addSubHeader('Resolution Notes');
+                addNormalText(dispute.resolutionNotes);
+            }
+
+            if (dispute.status === 'ForwardedToCourt') {
+                doc.moveDown(0.5);
+                addSubHeader('Court Forwarding Details');
+                addBulletPoint('Court Type', dispute.courtType);
+                addBulletPoint('Court Name', dispute.courtName);
+                addBulletPoint('Court Location', dispute.courtLocation);
+                addBulletPoint('Forwarded On', dispute.courtForwardedAt ? new Date(dispute.courtForwardedAt).toLocaleDateString('en-IN') : 'N/A');
+            }
+            doc.moveDown(1);
+
+            addSeparator();
+
+            // ===== ACTIVITY LOG =====
+            if (auditLogs.length > 0) {
+                addSectionHeader('8. ACTIVITY LOG (Last 10 Events)');
+                
+                auditLogs.slice(0, 10).forEach(log => {
+                    doc.fontSize(9).font('Helvetica-Bold').text(
+                        new Date(log.createdAt).toLocaleString('en-IN'), 
+                        { continued: true }
+                    );
+                    doc.font('Helvetica').text(` - ${log.action}`);
+                    if (log.description) {
+                        doc.fontSize(8).font('Helvetica').text(`   ${log.description}`, { indent: 10 });
+                    }
+                    doc.moveDown(0.2);
+                });
+                doc.moveDown(1);
+            }
+
+            addSeparator();
+
+            // ===== FOOTER =====
+            doc.moveDown(1);
+            doc.fontSize(9).font('Helvetica-Oblique').fillColor('#6b7280').text(
+                'This report is generated automatically by MediaAI platform and represents the current state of the case.',
+                { align: 'center' }
+            );
+            doc.moveDown(0.3);
+            doc.fontSize(8).text(`Generated on ${timestamp} IST | Document ID: ${documentId}`, { align: 'center' });
+            doc.fillColor('black');
+
+            doc.end();
+        } catch (e) {
+            logError('Case Summary PDF Generation Error', { error: e.message, stack: e.stack, disputeId: dispute?.id });
+            console.error('Case Summary PDF Generation Error:', e);
+            reject(e);
+        }
+    });
+}
+
+// ==================== PDF REPORT ENDPOINTS ====================
+
+// Generate and download Case Summary PDF
+app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => {
+    try {
+        const dispute = await Dispute.findByPk(req.params.id, {
+            include: [
+                { model: User, as: 'plaintiff', attributes: ['username', 'email'] },
+                { model: User, as: 'defendant', attributes: ['username', 'email'] }
+            ]
+        });
+
+        if (!dispute) {
+            return res.status(404).json({ error: 'Dispute not found' });
+        }
+
+        // Verify access
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || 
+                       dispute.defendantId === req.user.id || 
+                       dispute.creatorId === req.user.id;
+
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this report' });
+        }
+
+        // Fetch related data
+        const [messages, evidenceList, auditLogs] = await Promise.all([
+            Message.findAll({
+                where: { disputeId: dispute.id },
+                order: [['createdAt', 'ASC']],
+                limit: 100
+            }),
+            Evidence.findAll({
+                where: { disputeId: dispute.id },
+                order: [['createdAt', 'DESC']]
+            }),
+            AuditLog.findAll({
+                where: { 
+                    resourceType: 'DISPUTE',
+                    resourceId: dispute.id 
+                },
+                order: [['createdAt', 'DESC']],
+                limit: 20
+            })
+        ]);
+
+        // Generate PDF (generator may return Buffer or { path } or stream)
+        const pdfResult = await generateCaseSummaryPDF(dispute, messages, evidenceList, auditLogs);
+
+        // Log debug info for diagnostics
+        logInfo('Case summary generation result type', { disputeId: dispute.id, resultType: typeof pdfResult });
+
+        // Support Buffer result
+        if (Buffer.isBuffer(pdfResult)) {
+            const fileName = `Case_Summary_${dispute.id}_${Date.now()}.pdf`;
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            res.setHeader('Content-Length', pdfResult.length);
+
+            await logAuditEvent({
+                action: 'REPORT_GENERATED',
+                category: AuditCategories.DISPUTE,
+                user: { id: req.user.id },
+                resourceType: 'DISPUTE',
+                resourceId: dispute.id,
+                description: `Case summary report generated for dispute #${dispute.id}`,
+                request: req,
+                status: 'SUCCESS'
+            });
+
+            return res.send(pdfResult);
+        }
+
+        // Support { path } result
+        if (pdfResult && pdfResult.path) {
+            const filePath = pdfResult.path;
+            if (!fs.existsSync(filePath)) {
+                logError('Generated PDF path not found', { path: filePath, disputeId: dispute.id });
+                return res.status(500).json({ error: 'Generated PDF not available' });
+            }
+
+            const fileName = `Case_Summary_${dispute.id}_${Date.now()}.pdf`;
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+            await logAuditEvent({
+                action: 'REPORT_GENERATED',
+                category: AuditCategories.DISPUTE,
+                user: { id: req.user.id },
+                resourceType: 'DISPUTE',
+                resourceId: dispute.id,
+                description: `Case summary report generated for dispute #${dispute.id}`,
+                request: req,
+                status: 'SUCCESS'
+            });
+
+            const fileStream = fs.createReadStream(filePath);
+            return fileStream.pipe(res);
+        }
+
+        // Unsupported generator result
+        logError('Unsupported PDF generator result', { disputeId: dispute.id, pdfResult: typeof pdfResult });
+        return res.status(500).json({ error: 'Failed to generate report' });
+    } catch (error) {
+        logError('Failed to generate case summary report', { 
+            error: error.message, 
+            stack: error.stack,
+            disputeId: req.params.id,
+            userId: req.user?.id
+        });
+        console.error('Case summary PDF generation failed:', error);
+        res.status(500).json({ error: 'Failed to generate report', details: error.message });
+    }
+});
+
+// Download Settlement Agreement PDF (authenticated)
+app.get('/api/disputes/:id/report/agreement', authMiddlewareForMedia, async (req, res) => {
+    try {
+        const dispute = await Dispute.findByPk(req.params.id);
+
+        if (!dispute) {
+            return res.status(404).json({ error: 'Dispute not found' });
+        }
+
+        // Log requestor for auditing
+        logInfo('Agreement download requested', { disputeId: dispute.id, userId: req.user?.id, userRole: req.user?.role });
+
+        // Verify access
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || 
+                       dispute.defendantId === req.user.id || 
+                       dispute.creatorId === req.user.id;
+
+        if (!isAdmin && !isParty) {
+            logError('Unauthorized agreement download attempt', { disputeId: dispute.id, userId: req.user?.id });
+            return res.status(403).json({ error: 'Not authorized to access this document' });
+        }
+
+        // Check if agreement exists
+        if (!dispute.agreementDocPath) {
+            return res.status(404).json({ error: 'Settlement agreement not yet generated' });
+        }
+
+        const filePath = path.join(process.cwd(), 'uploads', dispute.agreementDocPath);
+
+        if (!fs.existsSync(filePath)) {
+            logError('Agreement file missing on disk', { disputeId: dispute.id, path: filePath });
+            return res.status(404).json({ error: 'Agreement file not found' });
+        }
+
+        // Set response headers
+        const fileName = `Settlement_Agreement_Case_${dispute.id}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+        // Stream file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (err) => {
+            logError('Error streaming agreement file', { error: err.message, disputeId: dispute.id });
+            res.status(500).end();
+        });
+        fileStream.pipe(res);
+
+        // Log audit
+        await logAuditEvent({
+            action: 'AGREEMENT_DOWNLOADED',
+            category: AuditCategories.DISPUTE,
+            user: { id: req.user.id },
+            resourceType: 'DISPUTE',
+            resourceId: dispute.id,
+            description: `Settlement agreement downloaded for dispute #${dispute.id}`,
+            request: req,
+            status: 'SUCCESS'
+        });
+
+    } catch (error) {
+        logError('Failed to download settlement agreement', { error: error.message, stack: error.stack, disputeId: req.params.id });
+        res.status(500).json({ error: 'Failed to download agreement' });
+    }
+});
+
+// View Settlement Agreement PDF (inline preview)
+app.get('/api/disputes/:id/report/agreement/preview', authMiddlewareForMedia, async (req, res) => {
+    try {
+        const dispute = await Dispute.findByPk(req.params.id);
+
+        if (!dispute) {
+            return res.status(404).json({ error: 'Dispute not found' });
+        }
+
+        // Verify access
+        const isAdmin = req.user.role === 'Admin';
+        const isParty = dispute.plaintiffId === req.user.id || 
+                       dispute.defendantId === req.user.id || 
+                       dispute.creatorId === req.user.id;
+
+        if (!isAdmin && !isParty) {
+            return res.status(403).json({ error: 'Not authorized to access this document' });
+        }
+
+        if (!dispute.agreementDocPath) {
+            return res.status(404).json({ error: 'Settlement agreement not yet generated' });
+        }
+
+        const filePath = path.join(process.cwd(), 'uploads', dispute.agreementDocPath);
+
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'Agreement file not found' });
+        }
+
+        // Set response headers for inline viewing
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="Settlement_Agreement_Case_${dispute.id}.pdf"`);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+
+    } catch (error) {
+        logError('Failed to preview settlement agreement', { error: error.message, disputeId: req.params.id });
+        res.status(500).json({ error: 'Failed to preview agreement' });
+    }
+});
+
+// ==================== END PDF REPORT ENDPOINTS ====================
+
 // Sync DB and Start
 sequelize.sync({ alter: true }).then(async () => {
     // Also sync the AuditLog and Notification models
@@ -4214,6 +6855,10 @@ sequelize.sync({ alter: true }).then(async () => {
     
     // Initialize notification service with models and socket.io
     notificationService.initializeNotificationService(Notification, io, emitToUser);
+    
+    // Initialize session service with Session and User models
+    sessionService.initialize(Session, User);
+    logInfo('Session service initialized');
     
     // Add database performance indexes
     await addDatabaseIndexes();
