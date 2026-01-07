@@ -71,7 +71,7 @@ export async function createNotification({
 
         // Send real-time notification via Socket.io
         if (io && emitToUser) {
-            emitToUser(userId, 'notification', {
+            emitToUser(userId, 'notification:new', {
                 id: notification.id,
                 type: notification.type,
                 title: notification.title,
@@ -81,6 +81,16 @@ export async function createNotification({
                 createdAt: notification.createdAt,
                 isRead: false
             });
+            
+            // Also send updated unread count
+            try {
+                const unreadCount = await Notification.count({
+                    where: { userId, isRead: false }
+                });
+                emitToUser(userId, 'notification:count', { count: unreadCount });
+            } catch (countErr) {
+                logError('Failed to get unread notification count', { error: countErr.message, userId });
+            }
         }
 
         // Audit log (minimal - don't log every notification)

@@ -41,31 +41,39 @@ fi
 
 echo "✅ Database is running"
 
-# Start backend server
+# Start backend server (guard against port already in use)
 echo "🔧 Starting backend server..."
-cd backend
-npm run dev &
-BACKEND_PID=$!
 
-# Wait for backend to start
-echo "⏳ Waiting for backend to initialize..."
-sleep 5
+# Check if port 5000 is already in use
+if lsof -i :5000 -sTCP:LISTEN -t > /dev/null 2>&1; then
+    echo "⚠️  Port 5000 already in use — skipping backend start"
+    echo "✅ Backend server appears to be running on http://localhost:5000"
+else
+    cd backend
+    npm run dev &
+    BACKEND_PID=$!
 
-# Check if backend is running
-if ! curl -s http://localhost:5000 > /dev/null 2>&1; then
-    # Backend might still be starting, check the process
-    if ! ps -p $BACKEND_PID > /dev/null; then
-        echo "❌ Error: Backend server failed to start"
-        echo "   Check backend/src/server.js for errors"
-        exit 1
+    # Wait for backend to start
+    echo "⏳ Waiting for backend to initialize..."
+    sleep 5
+
+    # Check if backend is running
+    if ! curl -s http://localhost:5000 > /dev/null 2>&1; then
+        # Backend might still be starting, check the process
+        if ! ps -p $BACKEND_PID > /dev/null; then
+            echo "❌ Error: Backend server failed to start"
+            echo "   Check backend/src/server.js for errors"
+            exit 1
+        fi
     fi
-fi
 
-echo "✅ Backend server is running on http://localhost:5000"
+    echo "✅ Backend server is running on http://localhost:5000"
+    cd ..
+fi
 
 # Start frontend
 echo "🎨 Starting frontend..."
-cd ../frontend
+cd frontend
 npm run dev
 
 echo ""

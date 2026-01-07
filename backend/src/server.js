@@ -21,6 +21,7 @@ import rateLimit from 'express-rate-limit';
 import { body, validationResult } from 'express-validator';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import * as Sentry from '@sentry/node';
 
 // Import logger and audit services
 import logger, { logInfo, logError, logWarn, logAudit, requestLogger, generateRequestId } from './services/logger.js';
@@ -4018,6 +4019,275 @@ app.post('/api/admin/users/:userId/activate', authMiddleware, adminMiddleware, a
     }
 });
 
+// ==================== ADMIN DASHBOARD API ====================
+
+// Get comprehensive admin dashboard statistics
+app.get('/api/admin/dashboard/stats', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const thisWeekStart = new Date(today);
+        thisWeekStart.setDate(today.getDate() - today.getDay());
+        const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+
+        // Dispute Statistics
+        const totalDisputes = await Dispute.count();
+        const disputesByStatus = await Dispute.findAll({
+            attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+            group: ['status'],
+            raw: true
+        });
+
+        const disputesThisMonth = await Dispute.count({
+            where: { createdAt: { [Op.gte]: thisMonthStart } }
+        });
+        const disputesLastMonth = await Dispute.count({
+            where: { 
+                createdAt: { 
+                    [Op.gte]: lastMonthStart,
+                    [Op.lte]: lastMonthEnd
+                } 
+            }
+        });
+        const disputesToday = await Dispute.count({
+            where: { createdAt: { [Op.gte]: today } }
+        });
+
+        // Resolution Statistics
+        const resolvedDisputes = await Dispute.count({ where: { status: 'Resolved' } });
+        const forwardedToCourt = await Dispute.count({ where: { forwardedToCourt: true } });
+        const resolutionRate = totalDisputes > 0 ? ((resolvedDisputes / totalDisputes) * 100).toFixed(1) : 0;
+
+        // Calculate average resolution time (for resolved disputes)
+        const resolvedWithTime = await Dispute.findAll({
+            where: { status: 'Resolved' },
+            attributes: ['createdAt', 'updatedAt'],
+            raw: true
+        });
+        let avgResolutionDays = 0;
+        if (resolvedWithTime.length > 0) {
+            const totalDays = resolvedWithTime.reduce((sum, d) => {
+                const days = (new Date(d.updatedAt) - new Date(d.createdAt)) / (1000 * 60 * 60 * 24);
+                return sum + days;
+            }, 0);
+            avgResolutionDays = (totalDays / resolvedWithTime.length).toFixed(1);
+        }
+
+        // User Statistics
+        const totalUsers = await User.count();
+        const verifiedUsers = await User.count({ where: { isVerified: true } });
+        const suspendedUsers = await User.count({ where: { isSuspended: true } });
+        const adminUsers = await User.count({ where: { role: 'Admin' } });
+        const usersThisMonth = await User.count({
+            where: { createdAt: { [Op.gte]: thisMonthStart } }
+        });
+
+        // Pending Actions (Admin workqueue)
+        const pendingApprovals = await Dispute.count({ 
+            where: { status: 'PendingAdminApproval' } 
+        });
+        const pendingVerifications = await User.count({ 
+            where: { verificationStatus: 'Pending' } 
+        });
+        const awaitingDecision = await Dispute.count({ 
+            where: { status: 'AwaitingDecision' } 
+        });
+
+        // Recent Activity Counts (last 7 days)
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const messagesThisWeek = await Message.count({
+            where: { createdAt: { [Op.gte]: weekAgo } }
+        });
+        const evidenceThisWeek = await Evidence.count({
+            where: { createdAt: { [Op.gte]: weekAgo } }
+        });
+
+        // Disputes trend (last 6 months)
+        const disputesTrend = [];
+        for (let i = 5; i >= 0; i--) {
+            const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+            const count = await Dispute.count({
+                where: {
+                    createdAt: {
+                        [Op.gte]: monthStart,
+                        [Op.lte]: monthEnd
+                    }
+                }
+            });
+            disputesTrend.push({
+                month: monthStart.toLocaleString('default', { month: 'short' }),
+                year: monthStart.getFullYear(),
+                count
+            });
+        }
+
+        res.json({
+            overview: {
+                totalDisputes,
+                resolvedDisputes,
+                forwardedToCourt,
+                resolutionRate: parseFloat(resolutionRate),
+                avgResolutionDays: parseFloat(avgResolutionDays),
+                disputesToday,
+                disputesThisMonth,
+                disputesTrend: disputesLastMonth > 0 
+                    ? (((disputesThisMonth - disputesLastMonth) / disputesLastMonth) * 100).toFixed(1)
+                    : disputesThisMonth > 0 ? 100 : 0
+            },
+            disputes: {
+                byStatus: disputesByStatus.reduce((acc, item) => {
+                    acc[item.status] = parseInt(item.count);
+                    return acc;
+                }, {}),
+                trend: disputesTrend
+            },
+            users: {
+                total: totalUsers,
+                verified: verifiedUsers,
+                suspended: suspendedUsers,
+                admins: adminUsers,
+                newThisMonth: usersThisMonth
+            },
+            pendingActions: {
+                approvals: pendingApprovals,
+                verifications: pendingVerifications,
+                awaitingDecision: awaitingDecision,
+                total: pendingApprovals + pendingVerifications
+            },
+            activity: {
+                messagesThisWeek,
+                evidenceThisWeek
+            }
+        });
+    } catch (error) {
+        console.error('Admin dashboard stats error:', error);
+        Sentry.captureException(error, { tags: { action: 'admin_dashboard_stats' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to fetch dashboard statistics' });
+    }
+});
+
+// Get recent audit logs for admin
+app.get('/api/admin/dashboard/activity', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { limit = 50, category, action } = req.query;
+
+        const whereClause = {};
+        if (category) whereClause.category = category;
+        if (action) whereClause.action = action;
+
+        const activities = await AuditLog.findAll({
+            where: whereClause,
+            order: [['createdAt', 'DESC']],
+            limit: parseInt(limit)
+        });
+
+        // Get activity summary by category
+        const activityByCategory = await AuditLog.findAll({
+            attributes: ['category', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+            where: {
+                createdAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+            },
+            group: ['category'],
+            raw: true
+        });
+
+        res.json({
+            activities,
+            summary: activityByCategory.reduce((acc, item) => {
+                acc[item.category] = parseInt(item.count);
+                return acc;
+            }, {})
+        });
+    } catch (error) {
+        console.error('Admin activity log error:', error);
+        Sentry.captureException(error, { tags: { action: 'admin_activity_log' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to fetch activity logs' });
+    }
+});
+
+// Get disputes pending admin action
+app.get('/api/admin/dashboard/pending', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        // Get disputes pending admin approval
+        const pendingApprovals = await Dispute.findAll({
+            where: { status: 'PendingAdminApproval' },
+            order: [['updatedAt', 'DESC']],
+            limit: 10
+        });
+
+        // Get users pending verification
+        const pendingVerifications = await User.findAll({
+            where: { verificationStatus: 'Pending' },
+            attributes: ['id', 'username', 'email', 'createdAt', 'idCardPath', 'selfiePath'],
+            order: [['createdAt', 'ASC']],
+            limit: 10
+        });
+
+        // Get disputes needing attention (active but stale - no activity in 3+ days)
+        const staleDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+        const staleDisputes = await Dispute.findAll({
+            where: {
+                status: { [Op.in]: ['Active', 'AwaitingDecision'] },
+                updatedAt: { [Op.lt]: staleDate }
+            },
+            order: [['updatedAt', 'ASC']],
+            limit: 10
+        });
+
+        res.json({
+            approvals: pendingApprovals,
+            verifications: pendingVerifications,
+            staleDisputes
+        });
+    } catch (error) {
+        console.error('Admin pending items error:', error);
+        Sentry.captureException(error, { tags: { action: 'admin_pending_items' }, user: { id: req.user?.id } });
+        res.status(500).json({ error: 'Failed to fetch pending items' });
+    }
+});
+
+// Get system health metrics
+app.get('/api/admin/dashboard/health', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const dbHealth = await checkDatabaseHealth();
+        const uptime = process.uptime();
+        const memoryUsage = process.memoryUsage();
+
+        // Get active socket connections
+        const io = global.io;
+        const activeConnections = io ? io.engine.clientsCount : 0;
+
+        res.json({
+            status: dbHealth.connected ? 'healthy' : 'degraded',
+            database: dbHealth,
+            server: {
+                uptime: Math.floor(uptime),
+                uptimeFormatted: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+                memoryUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+                memoryTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+                memoryPercent: Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)
+            },
+            realtime: {
+                activeConnections,
+                socketStatus: io ? 'active' : 'inactive'
+            },
+            services: {
+                ai: API_KEY !== 'API_KEY_MISSING',
+                email: !!emailService,
+                sentry: !!process.env.SENTRY_DSN
+            }
+        });
+    } catch (error) {
+        console.error('Admin health check error:', error);
+        res.status(500).json({ error: 'Failed to fetch health metrics' });
+    }
+});
+
+// ==================== END ADMIN DASHBOARD API ====================
+
 // Get user activity log (Admin only)
 app.get('/api/admin/users/:userId/activity', authMiddleware, adminMiddleware, async (req, res) => {
     try {
@@ -5157,7 +5427,8 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
         // Emit real-time notification
         const io = req.app.get('io');
         const emitToDispute = req.app.get('emitToDispute');
-        emitToDispute(dispute.id, 'evidenceUploaded', {
+        emitToDispute(dispute.id, 'dispute:evidence-uploaded', {
+            disputeId: dispute.id,
             evidence: {
                 id: evidence.id,
                 uploaderName: evidence.uploaderName,
@@ -5187,7 +5458,8 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
             processEvidenceOcr(evidence.id).then(result => {
                 if (result.success && result.status === 'completed') {
                     // Emit OCR completion event
-                    emitToDispute(dispute.id, 'ocrCompleted', {
+                    emitToDispute(dispute.id, 'dispute:ocr-complete', {
+                        disputeId: dispute.id,
                         evidenceId: evidence.id,
                         hasText: result.text && result.text.length > 0,
                         wordCount: result.wordCount
@@ -5786,6 +6058,18 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
             );
         }
 
+        // Emit real-time update for signature submission
+        const io = global.io;
+        if (io) {
+            io.to(`dispute:${dispute.id}`).emit('dispute:signature-submitted', {
+                disputeId: dispute.id,
+                role,
+                signerName: currentUser.username,
+                plaintiffSigned: !!dispute.plaintiffSignature,
+                respondentSigned: !!dispute.respondentSignature,
+            });
+        }
+
         // Check if both signed -> Move to Admin Review (Automatic PDF generation phase)
         if (dispute.plaintiffSignature && dispute.respondentSignature) {
             dispute.resolutionStatus = 'AdminReview';
@@ -5814,6 +6098,17 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
                 status: 'SUCCESS'
             });
             logInfo('Agreement PDF generated', { disputeId: dispute.id, documentId });
+            
+            // Emit real-time update for agreement generation
+            if (io) {
+                io.to(`dispute:${dispute.id}`).emit('dispute:agreement-generated', {
+                    disputeId: dispute.id,
+                    status: dispute.status,
+                    resolutionStatus: dispute.resolutionStatus,
+                    documentId,
+                    agreementDocPath: dispute.agreementDocPath,
+                });
+            }
             
             // Send email notification to both parties
             await emailService.notifyResolutionAccepted(dispute);
@@ -5870,6 +6165,18 @@ app.post('/api/admin/approve-resolution/:id', authMiddleware, async (req, res) =
         const userIds = [plaintiffUser?.id, respondentUser?.id].filter(Boolean);
         if (userIds.length > 0) {
             await notificationService.notifyResolutionApproved(dispute.id, userIds);
+        }
+
+        // Emit real-time update for resolution finalized
+        const io = global.io;
+        if (io) {
+            io.to(`dispute:${dispute.id}`).emit('dispute:resolution-finalized', {
+                disputeId: dispute.id,
+                status: dispute.status,
+                resolutionStatus: dispute.resolutionStatus,
+                documentId: dispute.documentId,
+                agreementDocPath: dispute.agreementDocPath,
+            });
         }
 
         res.json({ message: 'Resolution finalized and agreement sent.', dispute });
@@ -5943,6 +6250,20 @@ app.post('/api/admin/forward-to-court/:id', authMiddleware, async (req, res) => 
         const userIds = [plaintiffUser?.id, respondentUser?.id].filter(Boolean);
         if (userIds.length > 0) {
             await notificationService.notifyCourtForwarding(dispute.id, userIds, courtName);
+        }
+
+        // Emit real-time update for court forwarding
+        const io = global.io;
+        if (io) {
+            io.to(`dispute:${dispute.id}`).emit('dispute:forwarded-to-court', {
+                disputeId: dispute.id,
+                status: dispute.status,
+                forwardedToCourt: true,
+                courtType,
+                courtName,
+                courtLocation,
+                courtForwardedAt: dispute.courtForwardedAt,
+            });
         }
 
         res.json({ 
@@ -6918,6 +7239,13 @@ sequelize.sync({ alter: true }).then(async () => {
             }
         });
     });
+
+    // Dev-only: Sentry test endpoint
+    if (process.env.NODE_ENV !== 'production') {
+        app.get('/__test-error', (req, res) => {
+            throw new Error('Sentry backend test error');
+        });
+    }
 
     // Sentry error handler (must be after all routes)
     app.use(sentryErrorHandler);

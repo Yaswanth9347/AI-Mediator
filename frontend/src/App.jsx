@@ -10,10 +10,12 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import EmailVerification from './pages/EmailVerification';
 import AdminUsers from './pages/AdminUsers';
+import AdminDashboard from './pages/AdminDashboard';
 import PaymentSuccess from './components/PaymentSuccess';
+import ConnectionStatus from './components/ConnectionStatus';
 import { Toaster } from 'react-hot-toast';
-import { Scale, LogOut, User, LayoutDashboard, FilePlus, ShieldCheck, Settings, Users } from 'lucide-react';
-import { SocketProvider } from './context/SocketContext';
+import { Scale, LogOut, User, LayoutDashboard, FilePlus, ShieldCheck, Settings, Users, BarChart3 } from 'lucide-react';
+import { SocketProvider, useSocket } from './context/SocketContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import NotificationBell from './components/NotificationBell';
 
@@ -65,6 +67,11 @@ function Navbar() {
                 <FilePlus className="w-4 h-4" /> New Dispute
               </Link>
               {isAdmin && (
+                <Link to="/admin" className="flex items-center gap-1 text-cyan-500 dark:text-cyan-400 hover:text-cyan-600 dark:hover:text-cyan-300 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                  <BarChart3 className="w-4 h-4" /> Admin Panel
+                </Link>
+              )}
+              {isAdmin && (
                 <Link to="/admin/users" className="flex items-center gap-1 text-purple-500 dark:text-purple-400 hover:text-purple-600 dark:hover:text-purple-300 px-3 py-2 rounded-md text-sm font-medium transition-colors">
                   <Users className="w-4 h-4" /> Manage Users
                 </Link>
@@ -93,6 +100,12 @@ function Navbar() {
   );
 }
 
+// Connection status wrapper component
+function ConnectionStatusWrapper() {
+  const { connected, reconnecting } = useSocket();
+  return <ConnectionStatus connected={connected} reconnecting={reconnecting} />;
+}
+
 function AppContent() {
   const location = useLocation();
   const isLoggedIn = !!localStorage.getItem('token');
@@ -105,6 +118,7 @@ function AppContent() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 font-sans text-gray-900 dark:text-gray-100 transition-colors duration-200 flex flex-col">
       {showNavbar && <Navbar />}
+      {showNavbar && <ConnectionStatusWrapper />}
 
       <main className={`flex-grow ${showNavbar ? 'max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8' : ''}`}>
         <Routes>
@@ -143,6 +157,11 @@ function AppContent() {
           } />
 
           {/* Admin Routes */}
+          <Route path="/admin" element={
+            <AdminRoute>
+              <AdminDashboard />
+            </AdminRoute>
+          } />
           <Route path="/admin/users" element={
             <AdminRoute>
               <AdminUsers />

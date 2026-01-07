@@ -99,10 +99,14 @@ export default function DisputeDetail() {
         fetchData();
     }, [id]);
 
-    // Join dispute room for real-time updates
+    // Join dispute room for real-time updates with sync callback
     useEffect(() => {
         if (socket && connected && id) {
-            joinDisputeRoom(id);
+            // Pass sync callback to refetch data on reconnection
+            joinDisputeRoom(id, () => {
+                console.log('Reconnection sync: refetching dispute data');
+                fetchData();
+            });
             return () => leaveDisputeRoom(id);
         }
     }, [socket, connected, id, joinDisputeRoom, leaveDisputeRoom]);
@@ -112,7 +116,18 @@ export default function DisputeDetail() {
         if (!socket) return;
 
         const handleNewMessage = (message) => {
-            setMessages(prev => [...prev, message]);
+            // Check if this is our optimistic message being confirmed
+            setMessages(prev => {
+                // Remove any pending version of this message and add the confirmed one
+                const filtered = prev.filter(m => 
+                    !(m.pending && m.content === message.content && m.senderId === message.senderId)
+                );
+                // Avoid duplicates
+                if (filtered.some(m => m.id === message.id)) {
+                    return filtered;
+                }
+                return [...filtered, message];
+            });
             setMessageCount(prev => prev + 1);
         };
 
@@ -183,6 +198,69 @@ export default function DisputeDetail() {
             toast.info(`${data.voterRole === 'plaintiff' ? 'Plaintiff' : 'Defendant'} has voted`);
         };
 
+        // Handle signature submitted
+        const handleSignatureSubmitted = (data) => {
+            console.log('Signature submitted:', data);
+            setDispute(prev => prev ? {
+                ...prev,
+                plaintiffSignature: data.plaintiffSigned ? (prev?.plaintiffSignature || 'signed') : prev?.plaintiffSignature,
+                respondentSignature: data.respondentSigned ? (prev?.respondentSignature || 'signed') : prev?.respondentSignature,
+            } : prev);
+            toast.success(`${data.signerName} has signed the agreement`);
+        };
+
+        // Handle agreement generated
+        const handleAgreementGenerated = (data) => {
+            console.log('Agreement generated:', data);
+            setDispute(prev => prev ? {
+                ...prev,
+                status: data.status,
+                resolutionStatus: data.resolutionStatus,
+                agreementDocPath: data.agreementDocPath,
+                documentId: data.documentId,
+            } : prev);
+            toast.success('Settlement agreement has been generated!');
+        };
+
+        // Handle resolution finalized
+        const handleResolutionFinalized = (data) => {
+            console.log('Resolution finalized:', data);
+            setDispute(prev => prev ? {
+                ...prev,
+                status: data.status,
+                resolutionStatus: data.resolutionStatus,
+            } : prev);
+            toast.success('🎉 Case has been resolved! Settlement agreement is ready.');
+        };
+
+        // Handle court forwarding
+        const handleForwardedToCourt = (data) => {
+            console.log('Case forwarded to court:', data);
+            setDispute(prev => prev ? {
+                ...prev,
+                status: data.status,
+                forwardedToCourt: true,
+                courtType: data.courtType,
+                courtName: data.courtName,
+                courtLocation: data.courtLocation,
+                courtForwardedAt: data.courtForwardedAt,
+            } : prev);
+            toast.info(`Case forwarded to ${data.courtName} (${data.courtType} Court)`);
+        };
+
+        // Handle evidence uploaded
+        const handleEvidenceUploaded = (data) => {
+            console.log('Evidence uploaded:', data);
+            toast.success(`New evidence uploaded by ${data.evidence?.uploaderName}`);
+            // Optionally trigger evidence refresh here
+        };
+
+        // Handle OCR complete
+        const handleOcrComplete = (data) => {
+            console.log('OCR completed for evidence:', data);
+            // Could update evidence list or show notification
+        };
+
         socket.on('message:new', handleNewMessage);
         socket.on('user:typing', handleTyping);
         socket.on('user:stop-typing', handleStopTyping);
@@ -190,6 +268,12 @@ export default function DisputeDetail() {
         socket.on('dispute:ai-ready', handleAiReady);
         socket.on('dispute:status-changed', handleStatusChanged);
         socket.on('dispute:vote-recorded', handleVoteRecorded);
+        socket.on('dispute:signature-submitted', handleSignatureSubmitted);
+        socket.on('dispute:agreement-generated', handleAgreementGenerated);
+        socket.on('dispute:resolution-finalized', handleResolutionFinalized);
+        socket.on('dispute:forwarded-to-court', handleForwardedToCourt);
+        socket.on('dispute:evidence-uploaded', handleEvidenceUploaded);
+        socket.on('dispute:ocr-complete', handleOcrComplete);
 
         return () => {
             socket.off('message:new', handleNewMessage);
@@ -199,40 +283,55 @@ export default function DisputeDetail() {
             socket.off('dispute:ai-ready', handleAiReady);
             socket.off('dispute:status-changed', handleStatusChanged);
             socket.off('dispute:vote-recorded', handleVoteRecorded);
+            socket.off('dispute:signature-submitted', handleSignatureSubmitted);
+            socket.off('dispute:agreement-generated', handleAgreementGenerated);
+            socket.off('dispute:resolution-finalized', handleResolutionFinalized);
+            socket.off('dispute:forwarded-to-court', handleForwardedToCourt);
+            socket.off('dispute:evidence-uploaded', handleEvidenceUploaded);
+            socket.off('dispute:ocr-complete', handleOcrComplete);
         };
     }, [socket, currentUsername]);
 
-    // Auto-scroll to latest message when messages change
-    const scrollToBottom = () => {
-        // Use setTimeout to ensure DOM has updated before scrolling
-        setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-    };
-
-    // Scroll to bottom when messages array changes (new message added)
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
+    // Auto-scroll disabled: do not programmatically change scroll position on load or message updates.
+    // The page should remain at the top by default and users can scroll manually.
 
     const handleSendMessage = async (e) => {
         e.preventDefault();
         if (!newMessage.trim() && !attachment) return;
 
+        const messageContent = newMessage.trim();
+        const userId = parseInt(localStorage.getItem('userId'));
+        
+        // Optimistic UI: Add message immediately with pending state
+        const optimisticMessage = {
+            id: `pending-${Date.now()}`,
+            content: messageContent,
+            senderId: userId,
+            senderName: currentUsername,
+            senderRole: isPlaintiff ? 'plaintiff' : 'defendant',
+            createdAt: new Date().toISOString(),
+            pending: true,
+            attachmentPath: attachment ? attachment.name : null,
+        };
+        
+        setMessages(prev => [...prev, optimisticMessage]);
+        setNewMessage('');
+        
         const formData = new FormData();
-        formData.append('content', newMessage);
+        formData.append('content', messageContent);
         if (attachment) formData.append('attachment', attachment);
 
         try {
             await sendMessage(id, formData);
-            setNewMessage('');
             setAttachment(null);
             // Stop typing when message is sent
             if (socket && connected) {
                 stopTyping(id);
             }
-            // Message will be added via socket event, no need to fetch
+            // Message will be confirmed/replaced via socket event
         } catch (err) {
+            // Remove optimistic message on error
+            setMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
             toast.error(err.response?.data?.error || 'Failed to send message');
         }
     };
@@ -668,12 +767,23 @@ export default function DisputeDetail() {
                         
                         {messages.length === 0 ? <p className="text-center text-blue-300 py-10 text-sm">Start the conversation</p> :
                             messages.map((msg) => (
-                                <div key={msg.id} className="flex justify-start">
+                                <div key={msg.id} className={`flex justify-start ${msg.pending ? 'opacity-70' : ''}`}>
                                     <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${msg.senderRole === 'plaintiff' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : msg.senderRole === 'defendant' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : 'bg-slate-800/70 text-blue-100 border border-blue-800'}`}>
                                         <p className="text-xs font-semibold mb-1 text-blue-300">{msg.senderName} ({msg.senderRole})</p>
                                         <p className="text-xs sm:text-sm break-words">{msg.content}</p>
-                                        {msg.attachmentPath && <img src={`http://localhost:5000/uploads/${msg.attachmentPath}`} alt="" className="mt-2 max-w-full rounded border border-blue-800" />}
-                                        <p className="text-xs text-blue-400 mt-1">{new Date(msg.createdAt).toLocaleTimeString()}</p>
+                                        {msg.attachmentPath && !msg.pending && <img src={`http://localhost:5000/uploads/${msg.attachmentPath}`} alt="" className="mt-2 max-w-full rounded border border-blue-800" />}
+                                        <div className="flex items-center gap-2 mt-1">
+                                            <p className="text-xs text-blue-400">{new Date(msg.createdAt).toLocaleTimeString()}</p>
+                                            {msg.pending && (
+                                                <span className="text-xs text-blue-400 italic flex items-center gap-1">
+                                                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
+                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                                                    </svg>
+                                                    Sending...
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             ))
