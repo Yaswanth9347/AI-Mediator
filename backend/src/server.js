@@ -22,7 +22,7 @@ import { body, validationResult } from 'express-validator';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import * as Sentry from '@sentry/node';
-
+import { cloudinary, storage, isCloudinaryConfigured } from './config/cloudinary.js';
 // Import logger and audit services
 import logger, { logInfo, logError, logWarn, logAudit, requestLogger, generateRequestId } from './services/logger.js';
 import { AuditLog, logAuditEvent, getDisputeAuditLogs, AuditActions, AuditCategories } from './services/auditService.js';
@@ -93,8 +93,8 @@ app.use((req, res, next) => {
 
 // CORS Configuration
 const corsOptions = {
-    origin: process.env.NODE_ENV === 'production' 
-        ? process.env.FRONTEND_URL 
+    origin: process.env.NODE_ENV === 'production'
+        ? process.env.FRONTEND_URL
         : ['http://localhost:5173', 'http://localhost:3000'],
     credentials: true,
     optionsSuccessStatus: 200
@@ -150,8 +150,8 @@ app.use('/api/', generalLimiter);
 // Socket.io Configuration
 const io = new Server(httpServer, {
     cors: {
-        origin: process.env.NODE_ENV === 'production' 
-            ? process.env.FRONTEND_URL 
+        origin: process.env.NODE_ENV === 'production'
+            ? process.env.FRONTEND_URL
             : ['http://localhost:5173', 'http://localhost:3000'],
         credentials: true
     }
@@ -166,7 +166,7 @@ io.use((socket, next) => {
     if (!token) {
         return next(new Error('Authentication error'));
     }
-    
+
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
         socket.userId = decoded.id;
@@ -183,7 +183,7 @@ const connectedUsers = new Map(); // userId -> { socketId, username, email }
 // Socket.io Event Handlers
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.userId} (${socket.id})`);
-    
+
     // Handle user joining
     socket.on('user:join', async (userData) => {
         connectedUsers.set(socket.userId, {
@@ -192,26 +192,26 @@ io.on('connection', (socket) => {
             email: userData.email,
             userId: socket.userId
         });
-        
+
         // Broadcast online status to all clients
         io.emit('user:online', {
             userId: socket.userId,
             username: userData.username
         });
     });
-    
+
     // Handle joining dispute room
     socket.on('dispute:join', (disputeId) => {
         socket.join(`dispute:${disputeId}`);
         console.log(`User ${socket.userId} joined dispute room ${disputeId}`);
     });
-    
+
     // Handle leaving dispute room
     socket.on('dispute:leave', (disputeId) => {
         socket.leave(`dispute:${disputeId}`);
         console.log(`User ${socket.userId} left dispute room ${disputeId}`);
     });
-    
+
     // Handle typing indicator
     socket.on('typing:start', ({ disputeId, username }) => {
         socket.to(`dispute:${disputeId}`).emit('user:typing', {
@@ -220,20 +220,20 @@ io.on('connection', (socket) => {
             disputeId
         });
     });
-    
+
     socket.on('typing:stop', ({ disputeId }) => {
         socket.to(`dispute:${disputeId}`).emit('user:stop-typing', {
             userId: socket.userId,
             disputeId
         });
     });
-    
+
     // Handle disconnection
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.userId} (${socket.id})`);
         const user = connectedUsers.get(socket.userId);
         connectedUsers.delete(socket.userId);
-        
+
         if (user) {
             io.emit('user:offline', {
                 userId: socket.userId,
@@ -285,10 +285,10 @@ async function processOcr(filePath, language = 'eng') {
                 }
             }
         });
-        
+
         const { data: { text, confidence } } = await worker.recognize(filePath);
         await worker.terminate();
-        
+
         return {
             success: true,
             text: text.trim(),
@@ -309,7 +309,7 @@ async function processEvidenceOcr(evidenceId) {
     try {
         // Import Evidence model (it's defined later, so we use sequelize.models)
         const evidenceRecord = await sequelize.models.evidence.findByPk(evidenceId);
-        
+
         if (!evidenceRecord) {
             logError('OCR: Evidence not found', { evidenceId });
             return { success: false, error: 'Evidence not found' };
@@ -327,20 +327,28 @@ async function processEvidenceOcr(evidenceId) {
         // Update status to processing
         await evidenceRecord.update({ ocrStatus: 'processing' });
 
-        const filePath = path.join(process.cwd(), 'uploads', evidenceRecord.fileName);
+        const fileSource = evidenceRecord.fileName; // Now this will be a Cloudinary URL or filename
+        let ocrInput;
 
-        // Check if file exists
-        if (!fs.existsSync(filePath)) {
-            await evidenceRecord.update({
-                ocrStatus: 'failed',
-                ocrError: 'File not found on disk',
-                ocrProcessedAt: new Date()
-            });
-            return { success: false, error: 'File not found' };
+        if (fileSource.startsWith('http')) {
+            // Handle Cloudinary/Remote URL
+            ocrInput = fileSource;
+        } else {
+            // Handle local file (backward compatibility)
+            const filePath = path.join(process.cwd(), 'uploads', fileSource);
+            if (!fs.existsSync(filePath)) {
+                await evidenceRecord.update({
+                    ocrStatus: 'failed',
+                    ocrError: 'File not found on disk',
+                    ocrProcessedAt: new Date()
+                });
+                return { success: false, error: 'File not found' };
+            }
+            ocrInput = filePath;
         }
 
         // Process OCR
-        const result = await processOcr(filePath);
+        const result = await processOcr(ocrInput);
 
         if (result.success) {
             await evidenceRecord.update({
@@ -374,7 +382,7 @@ async function processEvidenceOcr(evidenceId) {
         }
     } catch (error) {
         logError('OCR Processing failed', { evidenceId, error: error.message });
-        
+
         try {
             const evidenceRecord = await sequelize.models.evidence.findByPk(evidenceId);
             if (evidenceRecord) {
@@ -387,7 +395,7 @@ async function processEvidenceOcr(evidenceId) {
         } catch (e) {
             // Ignore update error
         }
-        
+
         return { success: false, error: error.message };
     }
 }
@@ -444,7 +452,7 @@ const User = sequelize.define('user', {
     lastLoginAt: { type: DataTypes.DATE },
     lastActivityAt: { type: DataTypes.DATE },
     // Notification Preferences (JSON)
-    notificationPreferences: { 
+    notificationPreferences: {
         type: DataTypes.TEXT,
         defaultValue: JSON.stringify({
             emailNotifications: true,
@@ -596,15 +604,15 @@ const Dispute = sequelize.define('dispute', {
     plaintiffSignature: { type: DataTypes.STRING }, // Path to sig image
     respondentSignature: { type: DataTypes.STRING }, // Path to sig image
     agreementDocPath: { type: DataTypes.STRING },
-    
+
     // Document Metadata (for verification)
     documentId: { type: DataTypes.STRING }, // UUID for document verification
     documentHash: { type: DataTypes.STRING }, // SHA-256 hash for tamper detection
 
     // Payment Information
-    paymentStatus: { 
-        type: DataTypes.STRING, 
-        defaultValue: 'pending' 
+    paymentStatus: {
+        type: DataTypes.STRING,
+        defaultValue: 'pending'
     }, // pending, processing, paid, failed, refunded
     paymentIntentId: { type: DataTypes.STRING }, // Stripe payment intent ID
     paymentAmount: { type: DataTypes.INTEGER }, // Amount in cents
@@ -672,28 +680,19 @@ const Notification = sequelize.define('notification', {
     ]
 });
 
-// ==================== ENHANCED FILE UPLOAD VALIDATION ====================
-
-// Multer storage configuration
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = 'uploads/';
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        // Sanitize filename and add unique identifier
-        const sanitizedName = file.originalname
-            .replace(/[^a-zA-Z0-9.-]/g, '_')
-            .substring(0, 100); // Limit filename length
-        const uniqueSuffix = Date.now() + '-' + crypto.randomBytes(6).toString('hex');
-        const ext = path.extname(sanitizedName);
-        const nameWithoutExt = path.basename(sanitizedName, ext);
-        cb(null, `${uniqueSuffix}-${nameWithoutExt}${ext}`);
-    }
+// Contact Model - For support inquiries
+const Contact = sequelize.define('contact', {
+    name: { type: DataTypes.STRING, allowNull: false },
+    email: { type: DataTypes.STRING, allowNull: false },
+    subject: { type: DataTypes.STRING, allowNull: false },
+    message: { type: DataTypes.TEXT, allowNull: false },
+    status: { type: DataTypes.STRING, defaultValue: 'Open' }, // Open, Replied, Closed
+    adminReply: { type: DataTypes.TEXT },
+    repliedAt: { type: DataTypes.DATE },
+    repliedBy: { type: DataTypes.INTEGER } // Admin User ID
 });
+
+// Cloudinary storage is imported from ./config/cloudinary.js and used in multer configurations below
 
 // File type validation configurations
 const FILE_TYPES = {
@@ -743,7 +742,7 @@ const createFileFilter = (allowedTypes) => {
                     false
                 );
             }
-            
+
             // Check file extension (additional security layer)
             const ext = path.extname(file.originalname).toLowerCase();
             if (!allowedTypes.extensions.includes(ext)) {
@@ -752,12 +751,12 @@ const createFileFilter = (allowedTypes) => {
                     false
                 );
             }
-            
+
             // Additional security: Check for suspicious filenames
             if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\')) {
                 return cb(new Error('Invalid filename detected.'), false);
             }
-            
+
             cb(null, true);
         } catch (error) {
             cb(new Error('File validation error.'), false);
@@ -765,9 +764,30 @@ const createFileFilter = (allowedTypes) => {
     };
 };
 
+// Local disk storage fallback for when Cloudinary is not configured
+const localDiskStorage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        const uploadsDir = './uploads';
+        // Ensure uploads directory exists
+        if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
+        }
+        cb(null, uploadsDir);
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    }
+});
+
+// Use Cloudinary storage if available, otherwise use local disk storage
+const activeStorage = storage || localDiskStorage;
+console.log(`📁 File storage: ${storage ? 'Cloudinary (cloud)' : 'Local disk (./uploads)'}`);
+
 // Create different upload configurations for different purposes
 const uploadEvidence = multer({
-    storage: storage,
+    storage: activeStorage,
     fileFilter: createFileFilter(FILE_TYPES.EVIDENCE),
     limits: {
         fileSize: FILE_TYPES.EVIDENCE.maxSize,
@@ -776,7 +796,7 @@ const uploadEvidence = multer({
 });
 
 const uploadProfile = multer({
-    storage: storage,
+    storage: activeStorage,
     fileFilter: createFileFilter(FILE_TYPES.PROFILE),
     limits: {
         fileSize: FILE_TYPES.PROFILE.maxSize,
@@ -785,7 +805,7 @@ const uploadProfile = multer({
 });
 
 const uploadDocument = multer({
-    storage: storage,
+    storage: activeStorage,
     fileFilter: createFileFilter(FILE_TYPES.DOCUMENT),
     limits: {
         fileSize: FILE_TYPES.DOCUMENT.maxSize,
@@ -794,7 +814,7 @@ const uploadDocument = multer({
 });
 
 const uploadImage = multer({
-    storage: storage,
+    storage: activeStorage,
     fileFilter: createFileFilter(FILE_TYPES.IMAGE),
     limits: {
         fileSize: FILE_TYPES.IMAGE.maxSize,
@@ -850,24 +870,55 @@ const genAI = new GoogleGenerativeAI(API_KEY);
 console.log('AI API Key configured:', API_KEY !== 'API_KEY_MISSING' ? 'Yes' : 'No');
 
 // Helper to read file to generatable part
-function fileToGenerativePart(filePath, mimeType) {
-    // Detect actual MIME type from file extension if not provided
-    if (!mimeType || mimeType === 'image/jpeg') {
-        const ext = path.extname(filePath).toLowerCase();
-        const mimeTypes = {
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.bmp': 'image/bmp'
-        };
-        mimeType = mimeTypes[ext] || 'image/jpeg';
+async function fileToGenerativePart(fileSource, mimeType) {
+    let data;
+
+    if (fileSource.startsWith('http')) {
+        // Handle Cloudinary/Remote URL
+        try {
+            const response = await fetch(fileSource);
+            const buffer = await response.arrayBuffer();
+            data = Buffer.from(buffer).toString("base64");
+
+            // Auto-detect mimeType from URL if not provided
+            if (!mimeType) {
+                const ext = path.extname(new URL(fileSource).pathname).toLowerCase();
+                const mimeTypes = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp',
+                    '.bmp': 'image/bmp'
+                };
+                mimeType = mimeTypes[ext] || 'image/jpeg';
+            }
+        } catch (error) {
+            logError("Failed to fetch remote file for Gemini", { url: fileSource, error: error.message });
+            throw error;
+        }
+    } else {
+        // Handle local file (backward compatibility)
+        const filePath = fileSource.includes('/') ? fileSource : path.join('uploads', fileSource);
+        data = fs.readFileSync(filePath).toString("base64");
+
+        if (!mimeType) {
+            const ext = path.extname(filePath).toLowerCase();
+            const mimeTypes = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            };
+            mimeType = mimeTypes[ext] || 'image/jpeg';
+        }
     }
-    
+
     return {
         inlineData: {
-            data: fs.readFileSync(filePath).toString("base64"),
+            data,
             mimeType
         }
     };
@@ -880,10 +931,10 @@ function fileToGenerativePart(filePath, mimeType) {
  */
 async function analyzeIdDocument(idCardPath) {
     if (API_KEY === 'API_KEY_MISSING') {
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: "API Key not configured",
-            isValidDocument: false 
+            isValidDocument: false
         };
     }
 
@@ -940,18 +991,18 @@ RESPOND IN EXACT JSON FORMAT:
                 ...parsed
             };
         }
-        
-        return { 
-            success: false, 
+
+        return {
+            success: false,
             error: "Failed to parse AI response",
-            isValidDocument: false 
+            isValidDocument: false
         };
     } catch (err) {
         logError("ID Document Analysis Error", { error: err.message, path: idCardPath });
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: err.message,
-            isValidDocument: false 
+            isValidDocument: false
         };
     }
 }
@@ -961,10 +1012,10 @@ RESPOND IN EXACT JSON FORMAT:
  */
 async function analyzeSelfie(selfiePath) {
     if (API_KEY === 'API_KEY_MISSING') {
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: "API Key not configured",
-            isValidSelfie: false 
+            isValidSelfie: false
         };
     }
 
@@ -1019,18 +1070,18 @@ RESPOND IN EXACT JSON FORMAT:
                 ...parsed
             };
         }
-        
-        return { 
-            success: false, 
+
+        return {
+            success: false,
             error: "Failed to parse AI response",
-            isValidSelfie: false 
+            isValidSelfie: false
         };
     } catch (err) {
         logError("Selfie Analysis Error", { error: err.message, path: selfiePath });
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: err.message,
-            isValidSelfie: false 
+            isValidSelfie: false
         };
     }
 }
@@ -1040,10 +1091,10 @@ RESPOND IN EXACT JSON FORMAT:
  */
 async function compareFaces(idCardPath, selfiePath) {
     if (API_KEY === 'API_KEY_MISSING') {
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: "API Key not configured",
-            facesMatch: false 
+            facesMatch: false
         };
     }
 
@@ -1109,18 +1160,18 @@ RESPOND IN EXACT JSON FORMAT:
                 ...parsed
             };
         }
-        
-        return { 
-            success: false, 
+
+        return {
+            success: false,
             error: "Failed to parse AI response",
-            facesMatch: false 
+            facesMatch: false
         };
     } catch (err) {
         logError("Face Comparison Error", { error: err.message });
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: err.message,
-            facesMatch: false 
+            facesMatch: false
         };
     }
 }
@@ -1130,8 +1181,8 @@ RESPOND IN EXACT JSON FORMAT:
  */
 async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
     if (API_KEY === 'API_KEY_MISSING') {
-        return { 
-            verified: false, 
+        return {
+            verified: false,
             reason: "API Key not configured. Verification unavailable.",
             confidence: 0,
             details: null
@@ -1141,18 +1192,18 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
     const startTime = Date.now();
     const verificationId = uuidv4();
 
-    logInfo('Starting identity verification', { 
-        verificationId, 
-        username, 
-        idCardPath, 
-        selfiePath 
+    logInfo('Starting identity verification', {
+        verificationId,
+        username,
+        idCardPath,
+        selfiePath
     });
 
     try {
         // Step 1: Analyze ID Document
         logInfo('Analyzing ID document...', { verificationId });
         const idAnalysis = await analyzeIdDocument(idCardPath);
-        
+
         if (!idAnalysis.success || !idAnalysis.isValidDocument) {
             logInfo('ID document validation failed', { verificationId, result: idAnalysis });
             return {
@@ -1171,7 +1222,7 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
         // Step 2: Analyze Selfie
         logInfo('Analyzing selfie...', { verificationId });
         const selfieAnalysis = await analyzeSelfie(selfiePath);
-        
+
         if (!selfieAnalysis.success || !selfieAnalysis.isValidSelfie) {
             logInfo('Selfie validation failed', { verificationId, result: selfieAnalysis });
             return {
@@ -1206,7 +1257,7 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
         // Step 3: Compare Faces
         logInfo('Comparing faces...', { verificationId });
         const faceComparison = await compareFaces(idCardPath, selfiePath);
-        
+
         if (!faceComparison.success) {
             logInfo('Face comparison failed', { verificationId, result: faceComparison });
             return {
@@ -1227,13 +1278,13 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
         if (idAnalysis.extractedInfo?.fullName && username) {
             const idName = idAnalysis.extractedInfo.fullName.toLowerCase().trim();
             const userName = username.toLowerCase().trim();
-            
+
             // Check if username is contained in ID name or vice versa
             const nameWords = idName.split(/\s+/);
             const userWords = userName.split(/\s+/);
-            
-            const anyWordMatch = nameWords.some(nw => 
-                userWords.some(uw => 
+
+            const anyWordMatch = nameWords.some(nw =>
+                userWords.some(uw =>
                     nw.includes(uw) || uw.includes(nw)
                 )
             );
@@ -1246,21 +1297,21 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
         }
 
         // Final Decision
-        const isVerified = faceComparison.facesMatch && 
-                          faceComparison.verificationDecision === 'MATCH' &&
-                          faceComparison.matchConfidence >= 0.6;
+        const isVerified = faceComparison.facesMatch &&
+            faceComparison.verificationDecision === 'MATCH' &&
+            faceComparison.matchConfidence >= 0.6;
 
         const overallConfidence = Math.round(
             ((idAnalysis.authenticity?.confidence || 0.8) * 0.2 +
-             (selfieAnalysis.confidence || 0.8) * 0.2 +
-             (faceComparison.matchConfidence || 0) * 0.6) * 100
+                (selfieAnalysis.confidence || 0.8) * 0.2 +
+                (faceComparison.matchConfidence || 0) * 0.6) * 100
         );
 
         const duration = Date.now() - startTime;
-        
-        logInfo('Identity verification completed', { 
-            verificationId, 
-            verified: isVerified, 
+
+        logInfo('Identity verification completed', {
+            verificationId,
+            verified: isVerified,
             confidence: overallConfidence,
             duration: `${duration}ms`
         });
@@ -1306,13 +1357,13 @@ async function verifyIdentityWithAI(username, idCardPath, selfiePath) {
         };
 
     } catch (err) {
-        logError("Comprehensive Verification Error", { 
-            verificationId, 
+        logError("Comprehensive Verification Error", {
+            verificationId,
             error: err.message,
-            stack: err.stack 
+            stack: err.stack
         });
-        return { 
-            verified: false, 
+        return {
+            verified: false,
             reason: "An error occurred during verification. Please try again.",
             confidence: 0,
             error: err.message,
@@ -1332,7 +1383,7 @@ async function analyzeDisputeWithAI(dispute, messages, isReanalysis = false) {
     console.log('Dispute ID:', dispute.id);
     console.log('Message count:', messages.length);
     console.log('Is reanalysis:', isReanalysis);
-    
+
     if (API_KEY === 'API_KEY_MISSING') {
         console.error('AI Analysis skipped: API_KEY is missing');
         return null;
@@ -1372,49 +1423,83 @@ async function analyzeDisputeWithAI(dispute, messages, isReanalysis = false) {
             `${m.senderRole.toUpperCase()} (${m.senderName}): ${m.content} ${m.attachmentPath ? '[ATTACHMENT INCLUDED]' : ''}`
         ).join('\n');
 
-        const prompt = `You are an expert dispute resolver under Indian Constitutional Law and Indian Penal Code.
-${isReanalysis ? 'The previous solutions were rejected by one or both parties. Provide a NEW alternative solution.' : ''}
+        const prompt = `You are an impartial and highly analytical dispute-resolution intelligence system.
+Your primary responsibility is to carefully and thoroughly analyze dispute statements provided by both parties and arrive at a balanced, ethical, and fair resolution.
+
+CORE ANALYSIS REQUIREMENTS:
+- Examine each statement in detail, identifying: Key facts, Claims and counterclaims, Responsibilities of each party, Any misunderstandings, gaps, or conflicting interpretations
+- Maintain strict neutrality at all times
+- Do not favor one party over the other
+- Avoid assumptions not supported by the provided statements
+- Reference Indian Constitutional Law and Indian Penal Code where applicable
+
+FAIRNESS PRINCIPLE:
+- The proposed resolution must be equitable
+- Neither party should suffer an unfair loss
+- Neither party should receive an unreasonable advantage
+- The outcome should encourage compromise, accountability, and mutual closure
+- If fault exists on both sides, distribute responsibility proportionately and clearly explain why
+
+${isReanalysis ? 'IMPORTANT: The previous solutions were rejected by one or both parties. Provide NEW alternative solutions with different approaches.' : ''}
 
 DISPUTE CASE #${dispute.id}
 Title: ${dispute.title}
 
-PLAINTIFF: ${dispute.plaintiffName}
-Occupation: ${dispute.plaintiffOccupation}
-Initial Complaint: ${dispute.description}
+PLAINTIFF INFORMATION:
+- Name: ${dispute.plaintiffName}
+- Occupation: ${dispute.plaintiffOccupation || 'Not specified'}
+- Initial Complaint: ${dispute.description}
 
-DEFENDANT: ${dispute.respondentName}
-Occupation: ${dispute.respondentOccupation}
+DEFENDANT INFORMATION:
+- Name: ${dispute.respondentName}
+- Occupation: ${dispute.respondentOccupation || 'Not specified'}
 
 CONVERSATION HISTORY:
 ${conversationHistory}
 
 INSTRUCTIONS:
-1. Analyze the dispute descriptions AND the attached evidence images (if any).
-2. Reference Indian Constitutional Law/IPC.
-3. Assess SERIOUSNESS level.
+1. Analyze the dispute descriptions AND the attached evidence images (if any)
+2. Identify the core issues from BOTH perspectives
+3. Assess the SERIOUSNESS level (LOW/MEDIUM/HIGH)
+4. Provide 3 detailed, actionable resolution options
 
 Respond in this EXACT JSON format:
 {
-    "summary": "Brief objective summary",
-    "legalAssessment": "Legal perspective under Indian law",
+    "summary": "Comprehensive summary covering both parties' perspectives, key disputed facts, and main points of contention",
+    "keyIssues": ["Issue 1", "Issue 2", "Issue 3"],
+    "legalAssessment": "Detailed legal perspective under Indian Constitutional Law/IPC, including relevant sections if applicable",
     "seriousness": "LOW|MEDIUM|HIGH",
+    "faultAnalysis": "Proportionate analysis of responsibility on both sides, if applicable",
     "solutions": [
         {
-            "title": "Title", "description": "Solution Details", "benefitsPlaintiff": "...", "benefitsDefendant": "..."
+            "title": "Solution Title",
+            "description": "Detailed step-by-step solution with clear actionable items for both parties",
+            "benefitsPlaintiff": "How this solution addresses the plaintiff's concerns fairly",
+            "benefitsDefendant": "How this solution protects the defendant's interests",
+            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
         },
         {
-            "title": "Title", "description": "Solution Details", "benefitsPlaintiff": "...", "benefitsDefendant": "..."
+            "title": "Alternative Solution Title",
+            "description": "Different approach with detailed implementation",
+            "benefitsPlaintiff": "Plaintiff benefits",
+            "benefitsDefendant": "Defendant benefits",
+            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
         },
         {
-            "title": "Title", "description": "Solution Details", "benefitsPlaintiff": "...", "benefitsDefendant": "..."
+            "title": "Compromise Solution Title",
+            "description": "Middle-ground approach",
+            "benefitsPlaintiff": "Plaintiff benefits",
+            "benefitsDefendant": "Defendant benefits",
+            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
         }
     ],
-    "courtRecommendation": "If HIGH, which court (District/High) and why"
+    "preventiveRecommendations": ["Recommendation 1 to prevent similar disputes", "Recommendation 2"],
+    "courtRecommendation": "If seriousness is HIGH, specify which court (District/High/Supreme) and provide reasoning. If LOW or MEDIUM, explain why mediation is sufficient."
 }`;
 
         const parts = [prompt, ...evidenceParts];
         console.log('Sending request to Gemini API with', evidenceParts.length, 'evidence images');
-        
+
         const result = await model.generateContent(parts);
         const response = await result.response;
         let text = response.text();
@@ -1458,7 +1543,7 @@ async function verifyDocumentIsID(path) {
 
     try {
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const imagePart = fileToGenerativePart(path, "image/jpeg");
+        const imagePart = await fileToGenerativePart(path, "image/jpeg");
         const prompt = `Analyze this image. Is it a valid Government Identity Document (like Passport, Driver License, National ID, Aadhaar, PAN, etc)?
         Respond in JSON: { "isValid": boolean, "details": "string" }`;
 
@@ -1478,7 +1563,7 @@ async function checkAndTriggerAI(disputeId) {
     try {
         console.log('=== checkAndTriggerAI called ===');
         console.log('Dispute ID:', disputeId);
-        
+
         const dispute = await Dispute.findByPk(disputeId);
         if (!dispute) {
             console.log('Dispute not found');
@@ -1544,7 +1629,7 @@ async function checkAndTriggerAI(disputeId) {
             await dispute.save();
             logInfo('AI analysis completed for dispute', { disputeId, isAIGenerated });
             console.log('Dispute saved with AI analysis. AI Generated:', isAIGenerated);
-            
+
             // Audit log: AI analysis completed
             await logAuditEvent({
                 action: AuditActions.AI_ANALYSIS_COMPLETE,
@@ -1560,7 +1645,7 @@ async function checkAndTriggerAI(disputeId) {
                 },
                 status: 'SUCCESS'
             });
-            
+
             // Emit real-time update that AI solutions are ready
             const io = global.io;
             if (io) {
@@ -1570,7 +1655,7 @@ async function checkAndTriggerAI(disputeId) {
                     aiSolutions: analysis.solutions
                 });
             }
-            
+
             // Send email notification to both parties
             await emailService.notifyAIAnalysisReady(dispute);
         }
@@ -1583,7 +1668,7 @@ async function checkAndTriggerAI(disputeId) {
 app.get('/api/health', async (req, res) => {
     try {
         const dbHealth = await checkDatabaseHealth();
-        res.json({ 
+        res.json({
             status: dbHealth.connected ? 'ok' : 'degraded',
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
@@ -1593,7 +1678,7 @@ app.get('/api/health', async (req, res) => {
         });
     } catch (error) {
         logError('Health check failed', { error: error.message });
-        res.status(503).json({ 
+        res.status(503).json({
             status: 'error',
             timestamp: new Date().toISOString(),
             error: error.message
@@ -1609,18 +1694,18 @@ const authMiddleware = async (req, res, next) => {
     try {
         // First verify the JWT signature and expiry
         const decoded = jwt.verify(token, JWT_SECRET);
-        
+
         // Then validate against session store
         const session = await sessionService.validateSession(token);
-        
+
         if (!session) {
             // Session not found or revoked - could be logged out from another device
-            return res.status(401).json({ 
+            return res.status(401).json({
                 error: 'Session expired or revoked',
                 code: 'SESSION_INVALID'
             });
         }
-        
+
         // Attach user info and session to request
         req.user = decoded;
         req.session = session;
@@ -1639,26 +1724,26 @@ const authMiddleware = async (req, res, next) => {
 const authMiddlewareForMedia = async (req, res, next) => {
     // Try to get token from Authorization header first, then from query parameter
     let token = req.headers.authorization?.split(' ')[1];
-    
+
     if (!token && req.query.token) {
         token = req.query.token;
     }
-    
+
     if (!token) return res.status(401).json({ error: 'No token provided' });
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        
+
         // Validate against session store
         const session = await sessionService.validateSession(token);
-        
+
         if (!session) {
-            return res.status(401).json({ 
+            return res.status(401).json({
                 error: 'Session expired or revoked',
                 code: 'SESSION_INVALID'
             });
         }
-        
+
         req.user = decoded;
         req.session = session;
         req.token = token;
@@ -1693,7 +1778,7 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 app.get('/api/notifications', authMiddleware, async (req, res) => {
     try {
         const { limit = 50, unreadOnly = false } = req.query;
-        
+
         const whereClause = { userId: req.user.id };
         if (unreadOnly === 'true') {
             whereClause.isRead = false;
@@ -1724,7 +1809,7 @@ app.get('/api/notifications', authMiddleware, async (req, res) => {
 app.post('/api/notifications/:id/read', authMiddleware, async (req, res) => {
     try {
         const notification = await Notification.findByPk(req.params.id);
-        
+
         if (!notification) {
             return res.status(404).json({ error: 'Notification not found' });
         }
@@ -1778,7 +1863,7 @@ app.post('/api/notifications/read-all', authMiddleware, async (req, res) => {
             status: 'SUCCESS'
         });
 
-        res.json({ 
+        res.json({
             message: 'All notifications marked as read',
             count: updated[0]
         });
@@ -1792,7 +1877,7 @@ app.post('/api/notifications/read-all', authMiddleware, async (req, res) => {
 app.delete('/api/notifications/:id', authMiddleware, async (req, res) => {
     try {
         const notification = await Notification.findByPk(req.params.id);
-        
+
         if (!notification) {
             return res.status(404).json({ error: 'Notification not found' });
         }
@@ -2158,223 +2243,223 @@ app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), asyn
 });
 
 // Auth Routes
-app.post('/api/auth/register', 
+app.post('/api/auth/register',
     authLimiter,
     securityMiddleware.registerValidation,
     securityMiddleware.checkValidationErrors,
     async (req, res) => {
-    try {
-        const { username, email, password } = req.body;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        
-        // Generate email verification token
-        const emailVerificationToken = crypto.randomBytes(32).toString('hex');
-        const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-        
-        const user = await User.create({ 
-            username, 
-            email, 
-            password: hashedPassword, 
-            role: 'User',
-            isEmailVerified: false,
-            emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
-            emailVerificationExpiry
-        });
-        
-        // Send verification email
-        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
         try {
-            await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
-            logInfo('Verification email sent', { userId: user.id, email: user.email });
-        } catch (emailError) {
-            logWarn('Failed to send verification email', { error: emailError.message, userId: user.id });
-            // Continue registration even if email fails
+            const { username, email, password } = req.body;
+            const hashedPassword = await bcrypt.hash(password, 10);
+
+            // Generate email verification token
+            const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+            const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+            const user = await User.create({
+                username,
+                email,
+                password: hashedPassword,
+                role: 'User',
+                isEmailVerified: false,
+                emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
+                emailVerificationExpiry
+            });
+
+            // Send verification email
+            const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
+            try {
+                await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
+                logInfo('Verification email sent', { userId: user.id, email: user.email });
+            } catch (emailError) {
+                logWarn('Failed to send verification email', { error: emailError.message, userId: user.id });
+                // Continue registration even if email fails
+            }
+
+            // Audit log: User registration
+            await logAuditEvent({
+                action: AuditActions.USER_REGISTER,
+                category: AuditCategories.AUTH,
+                user: { id: user.id, email: user.email, username: user.username, role: user.role },
+                resourceType: 'USER',
+                resourceId: user.id,
+                description: `New user registered: ${username} (${email}) - Email verification pending`,
+                request: req,
+                status: 'SUCCESS'
+            });
+            logInfo('User registered successfully', { userId: user.id, username, email });
+
+            res.json({
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                role: user.role,
+                message: 'Registration successful! Please check your email to verify your account.',
+                emailVerificationRequired: true
+            });
+        } catch (error) {
+            // Audit log: Registration failed
+            await logAuditEvent({
+                action: AuditActions.USER_REGISTER,
+                category: AuditCategories.AUTH,
+                description: `Registration failed for: ${req.body.username}`,
+                request: req,
+                status: 'FAILURE',
+                errorMessage: error.message
+            });
+            logWarn('User registration failed', { username: req.body.username, error: error.message });
+            res.status(400).json({ error: 'Username or email already exists' });
         }
-        
-        // Audit log: User registration
-        await logAuditEvent({
-            action: AuditActions.USER_REGISTER,
-            category: AuditCategories.AUTH,
-            user: { id: user.id, email: user.email, username: user.username, role: user.role },
-            resourceType: 'USER',
-            resourceId: user.id,
-            description: `New user registered: ${username} (${email}) - Email verification pending`,
-            request: req,
-            status: 'SUCCESS'
-        });
-        logInfo('User registered successfully', { userId: user.id, username, email });
-        
-        res.json({ 
-            id: user.id, 
-            username: user.username, 
-            email: user.email, 
-            role: user.role,
-            message: 'Registration successful! Please check your email to verify your account.',
-            emailVerificationRequired: true
-        });
-    } catch (error) {
-        // Audit log: Registration failed
-        await logAuditEvent({
-            action: AuditActions.USER_REGISTER,
-            category: AuditCategories.AUTH,
-            description: `Registration failed for: ${req.body.username}`,
-            request: req,
-            status: 'FAILURE',
-            errorMessage: error.message
-        });
-        logWarn('User registration failed', { username: req.body.username, error: error.message });
-        res.status(400).json({ error: 'Username or email already exists' });
-    }
-});
+    });
 
 app.post('/api/auth/login',
     authLimiter,
     securityMiddleware.loginValidation,
     securityMiddleware.checkValidationErrors,
     async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        const user = await User.findOne({ where: { username } });
-        
-        if (!user) {
-            // Audit log: Failed login - user not found
-            await logAuditEvent({
-                action: AuditActions.USER_LOGIN_FAILED,
-                category: AuditCategories.AUTH,
-                description: `Failed login attempt for non-existent username: ${username}`,
-                request: req,
-                status: 'FAILURE',
-                errorMessage: 'Invalid credentials'
-            });
-            logWarn('Failed login attempt - user not found', { username, ip: req.ip });
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        // Check if account is suspended
-        if (user.isSuspended) {
-            await logAuditEvent({
-                action: AuditActions.USER_LOGIN_FAILED,
-                category: AuditCategories.AUTH,
-                user: { id: user.id, email: user.email, username: user.username },
-                description: `Login attempt on suspended account: ${username}`,
-                request: req,
-                status: 'FAILURE',
-                errorMessage: 'Account suspended'
-            });
-            return res.status(403).json({ error: 'Account is suspended. Please contact support.' });
-        }
-        
-        // Check if account is locked due to failed attempts
-        const lockoutCheck = securityMiddleware.checkAccountLockout(user);
-        if (lockoutCheck.isLocked) {
-            await logAuditEvent({
-                action: AuditActions.USER_LOGIN_FAILED,
-                category: AuditCategories.AUTH,
-                user: { id: user.id, email: user.email, username: user.username },
-                description: `Login attempt on locked account: ${username}`,
-                request: req,
-                status: 'FAILURE',
-                errorMessage: 'Account locked'
-            });
-            return res.status(429).json({ error: lockoutCheck.message });
-        }
-        
-        // Reset lockout if period expired
-        if (lockoutCheck.shouldReset) {
-            await securityMiddleware.resetFailedLoginAttempts(user);
-        }
-        
-        // Verify password
-        const isValidPassword = await bcrypt.compare(password, user.password);
-        if (!isValidPassword) {
-            // Handle failed login attempt
-            const failedAttempt = await securityMiddleware.handleFailedLogin(user);
-            
-            // Audit log: Failed login - wrong password
-            await logAuditEvent({
-                action: AuditActions.USER_LOGIN_FAILED,
-                category: AuditCategories.AUTH,
-                user: { id: user.id, email: user.email, username: user.username },
-                description: `Failed login attempt (wrong password) for: ${username} - Attempt ${failedAttempt.attempts}/5`,
-                request: req,
-                status: 'FAILURE',
-                errorMessage: failedAttempt.locked ? 'Account locked' : 'Invalid credentials',
-                metadata: { attempts: failedAttempt.attempts, locked: failedAttempt.locked }
-            });
-            
-            if (failedAttempt.locked) {
-                logWarn('Account locked due to failed attempts', { username, attempts: failedAttempt.attempts, ip: req.ip });
-                return res.status(429).json({ error: failedAttempt.message });
-            }
-            
-            logWarn('Failed login attempt - wrong password', { username, attempts: failedAttempt.attempts, remaining: failedAttempt.remaining, ip: req.ip });
-            return res.status(401).json({ 
-                error: `Invalid credentials. ${failedAttempt.remaining} attempt(s) remaining before account lockout.`
-            });
-        }
-        
-        // Successful login - reset failed attempts
-        await securityMiddleware.resetFailedLoginAttempts(user);
-        
-        const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
-        
-        // Create session in session store
-        const clientIP = getClientIP(req);
-        const userAgent = req.get('User-Agent');
-        
         try {
-            await sessionService.createSession({
-                userId: user.id,
-                token,
-                userAgent,
-                ipAddress: clientIP
-            });
-        } catch (sessionError) {
-            logWarn('Failed to create session in store, continuing with JWT only', { 
-                error: sessionError.message, 
-                userId: user.id 
-            });
-        }
-        
-        // Update last login
-        await user.update({ lastLoginAt: new Date() });
-        
-        // Audit log: Successful login
-        await logAuditEvent({
-            action: AuditActions.USER_LOGIN,
-            category: AuditCategories.AUTH,
-            user: { id: user.id, email: user.email, username: user.username, role: user.role },
-            resourceType: 'USER',
-            resourceId: user.id,
-            description: `User logged in: ${username}`,
-            request: req,
-            status: 'SUCCESS',
-            metadata: {
-                deviceInfo: parseUserAgent(userAgent),
-                ipAddress: clientIP
+            const { username, password } = req.body;
+            const user = await User.findOne({ where: { username } });
+
+            if (!user) {
+                // Audit log: Failed login - user not found
+                await logAuditEvent({
+                    action: AuditActions.USER_LOGIN_FAILED,
+                    category: AuditCategories.AUTH,
+                    description: `Failed login attempt for non-existent username: ${username}`,
+                    request: req,
+                    status: 'FAILURE',
+                    errorMessage: 'Invalid credentials'
+                });
+                logWarn('Failed login attempt - user not found', { username, ip: req.ip });
+                return res.status(401).json({ error: 'Invalid credentials' });
             }
-        });
-        logInfo('User logged in successfully', { userId: user.id, username });
-        
-        res.json({ token, role: user.role, username: user.username, email: user.email });
-    } catch (error) {
-        logError('Login error', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+
+            // Check if account is suspended
+            if (user.isSuspended) {
+                await logAuditEvent({
+                    action: AuditActions.USER_LOGIN_FAILED,
+                    category: AuditCategories.AUTH,
+                    user: { id: user.id, email: user.email, username: user.username },
+                    description: `Login attempt on suspended account: ${username}`,
+                    request: req,
+                    status: 'FAILURE',
+                    errorMessage: 'Account suspended'
+                });
+                return res.status(403).json({ error: 'Account is suspended. Please contact support.' });
+            }
+
+            // Check if account is locked due to failed attempts
+            const lockoutCheck = securityMiddleware.checkAccountLockout(user);
+            if (lockoutCheck.isLocked) {
+                await logAuditEvent({
+                    action: AuditActions.USER_LOGIN_FAILED,
+                    category: AuditCategories.AUTH,
+                    user: { id: user.id, email: user.email, username: user.username },
+                    description: `Login attempt on locked account: ${username}`,
+                    request: req,
+                    status: 'FAILURE',
+                    errorMessage: 'Account locked'
+                });
+                return res.status(429).json({ error: lockoutCheck.message });
+            }
+
+            // Reset lockout if period expired
+            if (lockoutCheck.shouldReset) {
+                await securityMiddleware.resetFailedLoginAttempts(user);
+            }
+
+            // Verify password
+            const isValidPassword = await bcrypt.compare(password, user.password);
+            if (!isValidPassword) {
+                // Handle failed login attempt
+                const failedAttempt = await securityMiddleware.handleFailedLogin(user);
+
+                // Audit log: Failed login - wrong password
+                await logAuditEvent({
+                    action: AuditActions.USER_LOGIN_FAILED,
+                    category: AuditCategories.AUTH,
+                    user: { id: user.id, email: user.email, username: user.username },
+                    description: `Failed login attempt (wrong password) for: ${username} - Attempt ${failedAttempt.attempts}/5`,
+                    request: req,
+                    status: 'FAILURE',
+                    errorMessage: failedAttempt.locked ? 'Account locked' : 'Invalid credentials',
+                    metadata: { attempts: failedAttempt.attempts, locked: failedAttempt.locked }
+                });
+
+                if (failedAttempt.locked) {
+                    logWarn('Account locked due to failed attempts', { username, attempts: failedAttempt.attempts, ip: req.ip });
+                    return res.status(429).json({ error: failedAttempt.message });
+                }
+
+                logWarn('Failed login attempt - wrong password', { username, attempts: failedAttempt.attempts, remaining: failedAttempt.remaining, ip: req.ip });
+                return res.status(401).json({
+                    error: `Invalid credentials. ${failedAttempt.remaining} attempt(s) remaining before account lockout.`
+                });
+            }
+
+            // Successful login - reset failed attempts
+            await securityMiddleware.resetFailedLoginAttempts(user);
+
+            const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+
+            // Create session in session store
+            const clientIP = getClientIP(req);
+            const userAgent = req.get('User-Agent');
+
+            try {
+                await sessionService.createSession({
+                    userId: user.id,
+                    token,
+                    userAgent,
+                    ipAddress: clientIP
+                });
+            } catch (sessionError) {
+                logWarn('Failed to create session in store, continuing with JWT only', {
+                    error: sessionError.message,
+                    userId: user.id
+                });
+            }
+
+            // Update last login
+            await user.update({ lastLoginAt: new Date() });
+
+            // Audit log: Successful login
+            await logAuditEvent({
+                action: AuditActions.USER_LOGIN,
+                category: AuditCategories.AUTH,
+                user: { id: user.id, email: user.email, username: user.username, role: user.role },
+                resourceType: 'USER',
+                resourceId: user.id,
+                description: `User logged in: ${username}`,
+                request: req,
+                status: 'SUCCESS',
+                metadata: {
+                    deviceInfo: parseUserAgent(userAgent),
+                    ipAddress: clientIP
+                }
+            });
+            logInfo('User logged in successfully', { userId: user.id, username });
+
+            res.json({ token, role: user.role, username: user.username, email: user.email });
+        } catch (error) {
+            logError('Login error', error);
+            res.status(500).json({ error: error.message });
+        }
+    });
 
 // Verify Email with token
 app.get('/api/auth/verify-email/:token', async (req, res) => {
     try {
         const { token } = req.params;
-        
+
         if (!token) {
             return res.status(400).json({ error: 'Verification token is required' });
         }
-        
+
         // Hash the provided token to compare with stored hash
         const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-        
+
         // Find user with valid token
         const user = await User.findOne({
             where: {
@@ -2382,7 +2467,7 @@ app.get('/api/auth/verify-email/:token', async (req, res) => {
                 emailVerificationExpiry: { [Op.gt]: new Date() }
             }
         });
-        
+
         if (!user) {
             await logAuditEvent({
                 action: 'EMAIL_VERIFICATION_FAILED',
@@ -2394,21 +2479,21 @@ app.get('/api/auth/verify-email/:token', async (req, res) => {
             });
             return res.status(400).json({ error: 'Invalid or expired verification token' });
         }
-        
+
         // Update user as verified
         await user.update({
             isEmailVerified: true,
             emailVerificationToken: null,
             emailVerificationExpiry: null
         });
-        
+
         // Send confirmation email
         try {
             await emailService.sendEmailVerifiedConfirmation(user.email, user.username);
         } catch (emailError) {
             logWarn('Failed to send verification confirmation email', { error: emailError.message });
         }
-        
+
         // Audit log
         await logAuditEvent({
             action: 'EMAIL_VERIFIED',
@@ -2420,10 +2505,10 @@ app.get('/api/auth/verify-email/:token', async (req, res) => {
             request: req,
             status: 'SUCCESS'
         });
-        
+
         logInfo('Email verified successfully', { userId: user.id, email: user.email });
-        
-        res.json({ 
+
+        res.json({
             message: 'Email verified successfully! You can now login.',
             verified: true
         });
@@ -2441,65 +2526,65 @@ app.post('/api/auth/resend-verification',
         body('email').trim().isEmail().normalizeEmail().withMessage('Valid email is required')
     ],
     async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ error: errors.array()[0].msg });
-        }
-        
-        const { email } = req.body;
-        
-        const user = await User.findOne({ where: { email } });
-        
-        // Don't reveal if user exists for security
-        const successMessage = 'If your email is registered and not verified, you will receive a verification link.';
-        
-        if (!user) {
-            return res.json({ message: successMessage });
-        }
-        
-        // Check if already verified
-        if (user.isEmailVerified) {
-            return res.json({ message: 'Your email is already verified. You can login now.' });
-        }
-        
-        // Generate new verification token
-        const emailVerificationToken = crypto.randomBytes(32).toString('hex');
-        const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-        
-        await user.update({
-            emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
-            emailVerificationExpiry
-        });
-        
-        // Send verification email
-        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
-        
         try {
-            await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
-            
-            await logAuditEvent({
-                action: 'VERIFICATION_EMAIL_RESENT',
-                category: AuditCategories.AUTH,
-                user: { id: user.id, email: user.email, username: user.username },
-                resourceType: 'USER',
-                resourceId: user.id,
-                description: `Verification email resent to: ${user.email}`,
-                request: req,
-                status: 'SUCCESS'
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: errors.array()[0].msg });
+            }
+
+            const { email } = req.body;
+
+            const user = await User.findOne({ where: { email } });
+
+            // Don't reveal if user exists for security
+            const successMessage = 'If your email is registered and not verified, you will receive a verification link.';
+
+            if (!user) {
+                return res.json({ message: successMessage });
+            }
+
+            // Check if already verified
+            if (user.isEmailVerified) {
+                return res.json({ message: 'Your email is already verified. You can login now.' });
+            }
+
+            // Generate new verification token
+            const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+            const emailVerificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+            await user.update({
+                emailVerificationToken: crypto.createHash('sha256').update(emailVerificationToken).digest('hex'),
+                emailVerificationExpiry
             });
-            
-            logInfo('Verification email resent', { userId: user.id, email: user.email });
-        } catch (emailError) {
-            logError('Failed to resend verification email', { error: emailError.message });
+
+            // Send verification email
+            const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email/${emailVerificationToken}`;
+
+            try {
+                await emailService.sendEmailVerification(user.email, user.username, verificationUrl);
+
+                await logAuditEvent({
+                    action: 'VERIFICATION_EMAIL_RESENT',
+                    category: AuditCategories.AUTH,
+                    user: { id: user.id, email: user.email, username: user.username },
+                    resourceType: 'USER',
+                    resourceId: user.id,
+                    description: `Verification email resent to: ${user.email}`,
+                    request: req,
+                    status: 'SUCCESS'
+                });
+
+                logInfo('Verification email resent', { userId: user.id, email: user.email });
+            } catch (emailError) {
+                logError('Failed to resend verification email', { error: emailError.message });
+            }
+
+            res.json({ message: successMessage });
+        } catch (error) {
+            logError('Resend verification error', { error: error.message });
+            res.status(500).json({ error: 'Failed to process request' });
         }
-        
-        res.json({ message: successMessage });
-    } catch (error) {
-        logError('Resend verification error', { error: error.message });
-        res.status(500).json({ error: 'Failed to process request' });
-    }
-});
+    });
 
 // Forgot Password - Request reset
 app.post('/api/auth/forgot-password',
@@ -2508,68 +2593,68 @@ app.post('/api/auth/forgot-password',
         body('email').trim().isEmail().normalizeEmail().withMessage('Valid email is required'),
     ],
     async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ error: errors.array()[0].msg });
-        }
-        
-        const { email } = req.body;
-        
-        const user = await User.findOne({ where: { email } });
-        
-        // Don't reveal if user exists for security
-        if (!user) {
-            return res.json({ message: 'If your email is registered, you will receive a password reset link' });
-        }
-
-        // Generate secure reset token
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-        const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
-
-        // Save token to database
-        await user.update({
-            resetToken: hashedToken,
-            resetTokenExpiry
-        });
-
-        // Send reset email
-        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
-        
         try {
-            await emailService.sendPasswordResetEmail(user.email, user.username, resetUrl);
-            
-            // Audit log: Password reset requested
-            await logAuditEvent({
-                action: AuditActions.PASSWORD_RESET_REQUEST,
-                category: AuditCategories.AUTH,
-                user: { id: user.id, email: user.email, username: user.username },
-                resourceType: 'USER',
-                resourceId: user.id,
-                description: `Password reset requested for: ${user.email}`,
-                request: req,
-                status: 'SUCCESS'
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: errors.array()[0].msg });
+            }
+
+            const { email } = req.body;
+
+            const user = await User.findOne({ where: { email } });
+
+            // Don't reveal if user exists for security
+            if (!user) {
+                return res.json({ message: 'If your email is registered, you will receive a password reset link' });
+            }
+
+            // Generate secure reset token
+            const resetToken = crypto.randomBytes(32).toString('hex');
+            const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+            const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
+
+            // Save token to database
+            await user.update({
+                resetToken: hashedToken,
+                resetTokenExpiry
             });
-            logInfo('Password reset email sent', { email: user.email });
-            
-            res.json({ message: 'If your email is registered, you will receive a password reset link' });
-        } catch (emailError) {
-            logError('Failed to send reset email', emailError);
-            // Still return success to user for security
-            res.json({ message: 'If your email is registered, you will receive a password reset link' });
+
+            // Send reset email
+            const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
+
+            try {
+                await emailService.sendPasswordResetEmail(user.email, user.username, resetUrl);
+
+                // Audit log: Password reset requested
+                await logAuditEvent({
+                    action: AuditActions.PASSWORD_RESET_REQUEST,
+                    category: AuditCategories.AUTH,
+                    user: { id: user.id, email: user.email, username: user.username },
+                    resourceType: 'USER',
+                    resourceId: user.id,
+                    description: `Password reset requested for: ${user.email}`,
+                    request: req,
+                    status: 'SUCCESS'
+                });
+                logInfo('Password reset email sent', { email: user.email });
+
+                res.json({ message: 'If your email is registered, you will receive a password reset link' });
+            } catch (emailError) {
+                logError('Failed to send reset email', emailError);
+                // Still return success to user for security
+                res.json({ message: 'If your email is registered, you will receive a password reset link' });
+            }
+        } catch (error) {
+            console.error('Forgot password error:', error);
+            res.status(500).json({ error: 'Failed to process password reset request' });
         }
-    } catch (error) {
-        console.error('Forgot password error:', error);
-        res.status(500).json({ error: 'Failed to process password reset request' });
-    }
-});
+    });
 
 // Reset Password with token
 app.post('/api/auth/reset-password', async (req, res) => {
     try {
         const { token, newPassword } = req.body;
-        
+
         if (!token || !newPassword) {
             return res.status(400).json({ error: 'Token and new password are required' });
         }
@@ -2634,7 +2719,7 @@ app.get('/api/users/profile', authMiddleware, async (req, res) => {
         const user = await User.findByPk(req.user.id, {
             attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry'] }
         });
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -2651,7 +2736,7 @@ app.put('/api/users/profile', authMiddleware, async (req, res) => {
     try {
         const { username, email, phone, address, occupation } = req.body;
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -2718,63 +2803,63 @@ app.put('/api/users/profile', authMiddleware, async (req, res) => {
 });
 
 // Change password (when logged in)
-app.post('/api/users/change-password', 
-    authMiddleware, 
+app.post('/api/users/change-password',
+    authMiddleware,
     securityMiddleware.changePasswordValidation,
     securityMiddleware.checkValidationErrors,
     async (req, res) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-
-        const user = await User.findByPk(req.user.id);
-        
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Verify current password
-        const isValidPassword = await bcrypt.compare(currentPassword, user.password);
-        if (!isValidPassword) {
-            return res.status(401).json({ error: 'Current password is incorrect' });
-        }
-
-        // Hash and update new password
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await user.update({ password: hashedPassword });
-
-        // Log password change to audit trail
-        await AuditLog.create({
-            action: 'PASSWORD_CHANGED',
-            category: 'AUTH',
-            resourceType: 'User',
-            resourceId: user.id,
-            userId: req.user.id,
-            description: 'User changed their password',
-            metadata: { message: 'Password changed successfully' },
-            ipAddress: req.ip,
-            userAgent: req.get('User-Agent')
-        });
-
-        // Send confirmation email
         try {
-            await emailService.sendPasswordChangedEmail(user.email, user.username);
-        } catch (emailError) {
-            console.error('Failed to send confirmation email:', emailError);
-        }
+            const { currentPassword, newPassword } = req.body;
 
-        res.json({ message: 'Password changed successfully' });
-    } catch (error) {
-        console.error('Change password error:', error);
-        Sentry.captureException(error, { tags: { action: 'change_password' }, user: { id: req.user?.id } });
-        res.status(500).json({ error: 'Failed to change password' });
-    }
-});
+            const user = await User.findByPk(req.user.id);
+
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+
+            // Verify current password
+            const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+            if (!isValidPassword) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
+
+            // Hash and update new password
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
+            await user.update({ password: hashedPassword });
+
+            // Log password change to audit trail
+            await AuditLog.create({
+                action: 'PASSWORD_CHANGED',
+                category: 'AUTH',
+                resourceType: 'User',
+                resourceId: user.id,
+                userId: req.user.id,
+                description: 'User changed their password',
+                metadata: { message: 'Password changed successfully' },
+                ipAddress: req.ip,
+                userAgent: req.get('User-Agent')
+            });
+
+            // Send confirmation email
+            try {
+                await emailService.sendPasswordChangedEmail(user.email, user.username);
+            } catch (emailError) {
+                console.error('Failed to send confirmation email:', emailError);
+            }
+
+            res.json({ message: 'Password changed successfully' });
+        } catch (error) {
+            console.error('Change password error:', error);
+            Sentry.captureException(error, { tags: { action: 'change_password' }, user: { id: req.user?.id } });
+            res.status(500).json({ error: 'Failed to change password' });
+        }
+    });
 
 // Get notification preferences
 app.get('/api/users/notification-preferences', authMiddleware, async (req, res) => {
     try {
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -2811,7 +2896,7 @@ app.get('/api/users/notification-preferences', authMiddleware, async (req, res) 
 app.put('/api/users/notification-preferences', authMiddleware, async (req, res) => {
     try {
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -2846,7 +2931,7 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
         const user = await User.findByPk(req.user.id, {
             attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry', 'twoFactorSecret'] }
         });
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -2910,7 +2995,7 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
             exportedAt: new Date().toISOString(),
             exportVersion: '1.0',
             dataRetentionPolicy: 'As per GDPR Article 17, you have the right to request deletion of this data at any time.',
-            
+
             // Personal Information
             personalInformation: {
                 userId: user.id,
@@ -2977,14 +3062,14 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
                 description: d.description,
                 status: d.status,
                 yourRole: d.plaintiffEmail === user.email ? 'Plaintiff' : 'Respondent',
-                
+
                 // Plaintiff details
                 plaintiffName: d.plaintiffName,
                 plaintiffEmail: d.plaintiffEmail,
                 plaintiffPhone: d.plaintiffPhone,
                 plaintiffAddress: d.plaintiffAddress,
                 plaintiffOccupation: d.plaintiffOccupation,
-                
+
                 // Respondent details
                 respondentName: d.respondentName,
                 respondentEmail: d.respondentEmail,
@@ -2993,21 +3078,21 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
                 respondentOccupation: d.respondentOccupation,
                 respondentAccepted: d.respondentAccepted,
                 defendantStatement: d.defendantStatement,
-                
+
                 // AI Analysis
                 aiAnalysis: d.aiAnalysis,
                 aiSolutions: d.aiSolutions ? JSON.parse(d.aiSolutions) : null,
-                
+
                 // Decisions
                 plaintiffDecision: d.plaintiffDecision,
                 defendantDecision: d.defendantDecision,
                 plaintiffSolution: d.plaintiffSolution,
                 defendantSolution: d.defendantSolution,
-                
+
                 // Resolution
                 resolutionNotes: d.resolutionNotes,
                 resolvedAt: d.resolvedAt,
-                
+
                 // Court forwarding
                 forwardedToCourt: d.forwardedToCourt,
                 courtType: d.courtType,
@@ -3015,13 +3100,13 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
                 courtLocation: d.courtLocation,
                 courtReason: d.courtReason,
                 courtForwardedAt: d.courtForwardedAt,
-                
+
                 // Signatures
                 plaintiffSignature: d.plaintiffSignature,
                 defendantSignature: d.defendantSignature,
                 plaintiffSignedAt: d.plaintiffSignedAt,
                 defendantSignedAt: d.defendantSignedAt,
-                
+
                 // Metadata
                 reanalysisCount: d.reanalysisCount,
                 createdAt: d.createdAt,
@@ -3135,8 +3220,8 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
             }
         });
 
-        logInfo('User data export completed successfully', { 
-            userId: req.user.id, 
+        logInfo('User data export completed successfully', {
+            userId: req.user.id,
             dataSize: JSON.stringify(exportData).length,
             recordCounts: {
                 disputes: disputes.length,
@@ -3160,7 +3245,7 @@ app.get('/api/users/export-data', authMiddleware, async (req, res) => {
 app.delete('/api/users/account', authMiddleware, async (req, res) => {
     try {
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -3187,16 +3272,16 @@ app.delete('/api/users/account', authMiddleware, async (req, res) => {
                 resourceId: user.id,
                 userId: req.user.id,
                 description: `Account deletion blocked: ${activeDisputes.length} active dispute(s)`,
-                metadata: { 
-                    reason: 'Active disputes exist', 
-                    activeDisputeCount: activeDisputes.length 
+                metadata: {
+                    reason: 'Active disputes exist',
+                    activeDisputeCount: activeDisputes.length
                 },
                 ipAddress: req.ip,
                 userAgent: req.get('User-Agent')
             });
 
-            return res.status(400).json({ 
-                error: `Cannot delete account. You have ${activeDisputes.length} active dispute(s). Please resolve or withdraw from all disputes first.` 
+            return res.status(400).json({
+                error: `Cannot delete account. You have ${activeDisputes.length} active dispute(s). Please resolve or withdraw from all disputes first.`
             });
         }
 
@@ -3206,7 +3291,7 @@ app.delete('/api/users/account', authMiddleware, async (req, res) => {
 
         // Delete associated data
         await Notification.destroy({ where: { userId } });
-        
+
         // Anonymize audit logs instead of deleting
         await AuditLog.update(
             { userId: null, metadata: { anonymized: true, originalUserId: userId } },
@@ -3221,7 +3306,7 @@ app.delete('/api/users/account', authMiddleware, async (req, res) => {
             resourceId: userId,
             userId: null,
             description: `Account deleted: ${username} (${userEmail})`,
-            metadata: { 
+            metadata: {
                 message: 'Account deleted by user request',
                 username,
                 email: userEmail
@@ -3248,10 +3333,10 @@ app.get('/api/users/sessions', authMiddleware, async (req, res) => {
     try {
         const currentTokenHash = hashToken(req.token);
         const sessions = await sessionService.getUserSessions(req.user.id, currentTokenHash);
-        
-        res.json({ 
+
+        res.json({
             sessions,
-            total: sessions.length 
+            total: sessions.length
         });
     } catch (error) {
         console.error('Get sessions error:', error);
@@ -3264,26 +3349,26 @@ app.get('/api/users/sessions', authMiddleware, async (req, res) => {
 app.delete('/api/users/sessions/:sessionId', authMiddleware, async (req, res) => {
     try {
         const { sessionId } = req.params;
-        
+
         // Verify the session belongs to the user
         const session = await Session.findOne({
-            where: { 
-                id: sessionId, 
+            where: {
+                id: sessionId,
                 userId: req.user.id,
                 isActive: true
             }
         });
-        
+
         if (!session) {
             return res.status(404).json({ error: 'Session not found' });
         }
-        
+
         // Check if trying to revoke current session
         const currentTokenHash = hashToken(req.token);
         if (session.tokenHash === currentTokenHash) {
             return res.status(400).json({ error: 'Cannot revoke current session. Use logout instead.' });
         }
-        
+
         // Revoke the session
         await sessionService.revokeSession(sessionId, 'Manually revoked by user');
 
@@ -3294,7 +3379,7 @@ app.delete('/api/users/sessions/:sessionId', authMiddleware, async (req, res) =>
             resourceId: sessionId,
             userId: req.user.id,
             description: `User revoked session: ${session.deviceName} (${session.browser})`,
-            metadata: { 
+            metadata: {
                 sessionId,
                 deviceType: session.deviceType,
                 browser: session.browser,
@@ -3330,7 +3415,7 @@ app.post('/api/users/sessions/revoke-all', authMiddleware, async (req, res) => {
             userAgent: req.get('User-Agent')
         });
 
-        res.json({ 
+        res.json({
             message: 'Successfully logged out from all other devices',
             revokedCount
         });
@@ -3415,35 +3500,27 @@ app.post('/api/users/profile-picture', authMiddleware, uploadProfile.single('pro
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-        
-        // Additional validation: Check actual file type (magic number verification)
-        const fileBuffer = fs.readFileSync(req.file.path);
-        const fileTypeCheck = await import('file-type').then(m => m.fileTypeFromBuffer(fileBuffer)).catch(() => null);
-        
-        if (fileTypeCheck && !['image/jpeg', 'image/png', 'image/webp'].includes(fileTypeCheck.mime)) {
-            // Delete invalid file
-            fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-                error: 'Invalid file type detected',
-                message: 'The uploaded file is not a valid image. Only JPEG, PNG, or WebP images are allowed.'
-            });
-        }
 
         const user = await User.findByPk(req.user.id);
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // Delete old profile picture if exists
-        if (user.profilePicture) {
-            const oldPath = path.join(__dirname, '..', user.profilePicture);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
+        // Get the file path - works for both Cloudinary (req.file.path is URL) and local storage (req.file.filename)
+        let profilePicturePath;
+        if (req.file.path && req.file.path.startsWith('http')) {
+            // Cloudinary returns full URL in path
+            profilePicturePath = req.file.path;
+        } else if (req.file.filename) {
+            // Local storage - construct relative path
+            profilePicturePath = `/uploads/${req.file.filename}`;
+        } else if (req.file.path) {
+            // Fallback - use path directly
+            profilePicturePath = req.file.path.replace(/^\./, ''); // Remove leading dot if present
+        } else {
+            return res.status(500).json({ error: 'Failed to process uploaded file' });
         }
 
-        // Save new profile picture path
-        const profilePicturePath = `/uploads/${req.file.filename}`;
         user.profilePicture = profilePicturePath;
         await user.save();
 
@@ -3460,7 +3537,7 @@ app.post('/api/users/profile-picture', authMiddleware, uploadProfile.single('pro
             userAgent: req.get('User-Agent')
         });
 
-        res.json({ 
+        res.json({
             message: 'Profile picture updated successfully',
             profilePicture: profilePicturePath
         });
@@ -3553,7 +3630,7 @@ app.put('/api/users/privacy-settings', authMiddleware, async (req, res) => {
     try {
         const { profileVisibility, showEmail, showPhone } = req.body;
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -3619,7 +3696,7 @@ app.post('/api/users/enable-2fa', authMiddleware, async (req, res) => {
 
         // Generate secret for 2FA (using crypto for simplicity, in production use speakeasy or similar)
         const secret = crypto.randomBytes(20).toString('hex');
-        
+
         // Generate backup codes
         const backupCodes = [];
         for (let i = 0; i < 10; i++) {
@@ -3664,7 +3741,7 @@ app.post('/api/users/verify-2fa', authMiddleware, async (req, res) => {
     try {
         const { code } = req.body;
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -3710,7 +3787,7 @@ app.post('/api/users/disable-2fa', authMiddleware, async (req, res) => {
     try {
         const { password } = req.body;
         const user = await User.findByPk(req.user.id);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -3817,6 +3894,37 @@ app.get('/api/users/statistics', authMiddleware, async (req, res) => {
     }
 });
 
+// ==================== CONTACT ROUTES ====================
+
+// Send a contact message (Public)
+app.post('/api/contact', generalLimiter, [
+    body('name').trim().notEmpty().withMessage('Name is required'),
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('subject').trim().notEmpty().withMessage('Subject is required'),
+    body('message').trim().notEmpty().withMessage('Message is required')
+], async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+        const { name, email, subject, message } = req.body;
+
+        await Contact.create({
+            name,
+            email,
+            subject,
+            message
+        });
+
+        res.status(201).json({ message: 'Message sent successfully' });
+    } catch (error) {
+        logError('Contact message failed', { error: error.message });
+        res.status(500).json({ error: 'Failed to send message' });
+    }
+});
+
 // ==================== ADMIN USER MANAGEMENT ====================
 
 // Admin middleware - checks if user is admin
@@ -3831,6 +3939,60 @@ const adminMiddleware = async (req, res, next) => {
         res.status(500).json({ error: 'Authorization failed' });
     }
 };
+
+// Get all contact messages (Admin)
+app.get('/api/admin/contacts', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const contacts = await Contact.findAll({
+            order: [['createdAt', 'DESC']]
+        });
+        res.json(contacts);
+    } catch (error) {
+        logError('Fetch contacts failed', { error: error.message });
+        res.status(500).json({ error: 'Failed to fetch messages' });
+    }
+});
+
+// Reply to contact message (Admin)
+app.put('/api/admin/contacts/:id/reply', authMiddleware, adminMiddleware, [
+    body('replyMessage').trim().notEmpty().withMessage('Reply message is required')
+], async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+        const { id } = req.params;
+        const { replyMessage } = req.body;
+
+        const contact = await Contact.findByPk(id);
+        if (!contact) {
+            return res.status(404).json({ error: 'Message not found' });
+        }
+
+        // Update contact status
+        await contact.update({
+            status: 'Replied',
+            adminReply: replyMessage,
+            repliedAt: new Date(),
+            repliedBy: req.user.id
+        });
+
+        // Send email notification
+        await emailService.sendContactReplyEmail(
+            contact.name,
+            contact.email,
+            contact.message,
+            replyMessage
+        );
+
+        res.json({ message: 'Reply sent successfully', contact });
+    } catch (error) {
+        logError('Reply contact failed', { error: error.message, contactId: req.params.id });
+        res.status(500).json({ error: 'Failed to send reply' });
+    }
+});
 
 // Get all users (Admin only)
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
@@ -3895,10 +4057,10 @@ app.put('/api/admin/users/:userId/role', authMiddleware, adminMiddleware, async 
             resourceId: parseInt(userId),
             userId: req.user.id,
             description: `Changed role of ${targetUser.username} from ${oldRole} to ${role}`,
-            metadata: { 
+            metadata: {
                 targetUsername: targetUser.username,
-                oldRole, 
-                newRole: role 
+                oldRole,
+                newRole: role
             },
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')
@@ -3952,7 +4114,7 @@ app.post('/api/admin/users/:userId/suspend', authMiddleware, adminMiddleware, as
             resourceId: parseInt(userId),
             userId: req.user.id,
             description: `Suspended user ${targetUser.username}: ${reason || 'No reason provided'}`,
-            metadata: { 
+            metadata: {
                 targetUsername: targetUser.username,
                 reason: reason || 'No reason provided'
             },
@@ -4044,11 +4206,11 @@ app.get('/api/admin/dashboard/stats', authMiddleware, adminMiddleware, async (re
             where: { createdAt: { [Op.gte]: thisMonthStart } }
         });
         const disputesLastMonth = await Dispute.count({
-            where: { 
-                createdAt: { 
+            where: {
+                createdAt: {
                     [Op.gte]: lastMonthStart,
                     [Op.lte]: lastMonthEnd
-                } 
+                }
             }
         });
         const disputesToday = await Dispute.count({
@@ -4085,14 +4247,14 @@ app.get('/api/admin/dashboard/stats', authMiddleware, adminMiddleware, async (re
         });
 
         // Pending Actions (Admin workqueue)
-        const pendingApprovals = await Dispute.count({ 
-            where: { status: 'PendingAdminApproval' } 
+        const pendingApprovals = await Dispute.count({
+            where: { status: 'PendingAdminApproval' }
         });
-        const pendingVerifications = await User.count({ 
-            where: { verificationStatus: 'Pending' } 
+        const pendingVerifications = await User.count({
+            where: { verificationStatus: 'Pending' }
         });
-        const awaitingDecision = await Dispute.count({ 
-            where: { status: 'AwaitingDecision' } 
+        const awaitingDecision = await Dispute.count({
+            where: { status: 'AwaitingDecision' }
         });
 
         // Recent Activity Counts (last 7 days)
@@ -4133,7 +4295,7 @@ app.get('/api/admin/dashboard/stats', authMiddleware, adminMiddleware, async (re
                 avgResolutionDays: parseFloat(avgResolutionDays),
                 disputesToday,
                 disputesThisMonth,
-                disputesTrend: disputesLastMonth > 0 
+                disputesTrend: disputesLastMonth > 0
                     ? (((disputesThisMonth - disputesLastMonth) / disputesLastMonth) * 100).toFixed(1)
                     : disputesThisMonth > 0 ? 100 : 0
             },
@@ -4347,8 +4509,8 @@ app.delete('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (r
         });
 
         if (activeDisputes.length > 0) {
-            return res.status(400).json({ 
-                error: `Cannot delete user. They have ${activeDisputes.length} active dispute(s).` 
+            return res.status(400).json({
+                error: `Cannot delete user. They have ${activeDisputes.length} active dispute(s).`
             });
         }
 
@@ -4356,7 +4518,7 @@ app.delete('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (r
 
         // Delete associated data
         await Notification.destroy({ where: { userId } });
-        
+
         // Anonymize audit logs
         await AuditLog.update(
             { userId: null, metadata: { anonymized: true, deletedByAdmin: req.user.id } },
@@ -4387,10 +4549,10 @@ app.delete('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (r
     }
 });
 
-app.post('/api/disputes', 
-    authMiddleware, 
+app.post('/api/disputes',
+    authMiddleware,
     createDisputeLimiter,
-    upload.fields([{ name: 'evidence', maxCount: 1 }, { name: 'idCard', maxCount: 1 }]), 
+    upload.fields([{ name: 'evidence', maxCount: 1 }, { name: 'idCard', maxCount: 1 }]),
     [
         body('title').trim().isLength({ min: 5, max: 200 }).withMessage('Title must be 5-200 characters'),
         body('description').trim().isLength({ min: 20, max: 2000 }).withMessage('Description must be 20-2000 characters'),
@@ -4402,108 +4564,111 @@ app.post('/api/disputes',
         body('respondentPhone').trim().matches(/^[0-9+\-\s()]{10,20}$/).withMessage('Valid phone number is required'),
     ],
     async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ error: errors.array()[0].msg });
-        }
-        
-        // 1. Verify Identity Document first
-        if (!req.files || !req.files.idCard) {
-            return res.status(400).json({ error: "Proof of Identity is required" });
-        }
-
-        console.log("Verifying ID Document...");
-        const idVerification = await verifyDocumentIsID(req.files.idCard[0].path);
-        if (!idVerification.isValid) {
-            return res.status(400).json({ error: `Invalid Identity Document: ${idVerification.details}` });
-        }
-        console.log("ID Verified:", idVerification.details);
-
-        const {
-            title,
-            description,
-            plaintiffName,
-            plaintiffEmail,
-            plaintiffPhone,
-            plaintiffAddress,
-            plaintiffOccupation,
-            respondentName,
-            respondentEmail,
-            respondentPhone,
-            respondentAddress,
-            respondentOccupation
-        } = req.body;
-
-        let evidenceText = '';
-        const evidenceFile = req.files.evidence ? req.files.evidence[0] : null;
-
-        if (evidenceFile) {
-            console.log('Processing evidence file:', evidenceFile.path);
-            try {
-                const worker = await createWorker('eng');
-                const { data: { text } } = await worker.recognize(evidenceFile.path);
-                evidenceText = text;
-                await worker.terminate();
-            } catch (ocrError) {
-                console.error('OCR Error:', ocrError);
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: errors.array()[0].msg });
             }
-        }
 
-        let dispute = await Dispute.create({
-            title,
-            description,
-            evidenceText,
-            evidenceImage: evidenceFile ? evidenceFile.filename : null,
-            creatorId: req.user.id,
-            plaintiffName,
-            plaintiffEmail,
-            plaintiffPhone,
-            plaintiffAddress,
-            plaintiffOccupation,
-            respondentName,
-            respondentEmail,
-            respondentPhone,
-            respondentAddress,
-            respondentOccupation,
-            status: 'Pending', // Waiting for respondent to see and respond
-            // ============ PAYMENT BYPASS FOR TESTING ============
-            // Remove these 4 lines when you want to enable payments again
-            paymentStatus: 'paid',
-            paidAt: new Date(),
-            paymentAmount: 0,
-            paymentCurrency: 'INR'
-            // ====================================================
-        });
+            // 1. Verify Identity Document first
+            if (!req.files || !req.files.idCard) {
+                return res.status(400).json({ error: "Proof of Identity is required" });
+            }
 
-        // Audit log: Dispute created
-        await logAuditEvent({
-            action: AuditActions.DISPUTE_CREATE,
-            category: AuditCategories.DISPUTE,
-            user: { id: req.user.id, email: plaintiffEmail, username: plaintiffName },
-            resourceType: 'DISPUTE',
-            resourceId: dispute.id,
-            description: `New dispute created: "${title}" (Plaintiff: ${plaintiffName} vs Defendant: ${respondentName})`,
-            metadata: {
+            console.log("Verifying ID Document...");
+            const idVerification = await verifyDocumentIsID(req.files.idCard[0].path);
+            if (!idVerification.isValid) {
+                return res.status(400).json({ error: `Invalid Identity Document: ${idVerification.details}` });
+            }
+            console.log("ID Verified:", idVerification.details);
+
+            const {
                 title,
+                description,
+                plaintiffName,
                 plaintiffEmail,
+                plaintiffPhone,
+                plaintiffAddress,
+                plaintiffOccupation,
+                respondentName,
                 respondentEmail,
-                hasEvidence: !!evidenceFile
-            },
-            request: req,
-            status: 'SUCCESS'
-        });
-        logInfo('Dispute created', { disputeId: dispute.id, title, plaintiffEmail, respondentEmail });
+                respondentPhone,
+                respondentAddress,
+                respondentOccupation
+            } = req.body;
 
-        // Send email notification to respondent
-        await emailService.notifyCaseCreated(dispute);
+            let evidenceText = '';
+            const evidenceFile = req.files.evidence ? req.files.evidence[0] : null;
 
-        res.json(dispute);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: error.message });
-    }
-});
+            if (evidenceFile) {
+                console.log('Processing evidence file:', evidenceFile.path);
+                try {
+                    // Tesseract can work with URLs directly
+                    const worker = await createWorker('eng');
+                    const { data: { text } } = await worker.recognize(evidenceFile.path);
+                    evidenceText = text;
+                    await worker.terminate();
+                } catch (ocrError) {
+                    console.error('OCR Error:', ocrError);
+                    // Continue without OCR text - not a blocking error
+                }
+            }
+
+            let dispute = await Dispute.create({
+                title,
+                description,
+                evidenceText,
+                // Use path for Cloudinary URL, fallback to filename for local storage
+                evidenceImage: evidenceFile ? (evidenceFile.path || evidenceFile.filename) : null,
+                creatorId: req.user.id,
+                plaintiffName,
+                plaintiffEmail,
+                plaintiffPhone,
+                plaintiffAddress,
+                plaintiffOccupation,
+                respondentName,
+                respondentEmail,
+                respondentPhone,
+                respondentAddress,
+                respondentOccupation,
+                status: 'Pending', // Waiting for respondent to see and respond
+                // ============ PAYMENT BYPASS FOR TESTING ============
+                // Remove these 4 lines when you want to enable payments again
+                paymentStatus: 'paid',
+                paidAt: new Date(),
+                paymentAmount: 0,
+                paymentCurrency: 'INR'
+                // ====================================================
+            });
+
+            // Audit log: Dispute created
+            await logAuditEvent({
+                action: AuditActions.DISPUTE_CREATE,
+                category: AuditCategories.DISPUTE,
+                user: { id: req.user.id, email: plaintiffEmail, username: plaintiffName },
+                resourceType: 'DISPUTE',
+                resourceId: dispute.id,
+                description: `New dispute created: "${title}" (Plaintiff: ${plaintiffName} vs Defendant: ${respondentName})`,
+                metadata: {
+                    title,
+                    plaintiffEmail,
+                    respondentEmail,
+                    hasEvidence: !!evidenceFile
+                },
+                request: req,
+                status: 'SUCCESS'
+            });
+            logInfo('Dispute created', { disputeId: dispute.id, title, plaintiffEmail, respondentEmail });
+
+            // Send email notification to respondent
+            await emailService.notifyCaseCreated(dispute);
+
+            res.json(dispute);
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ error: error.message });
+        }
+    });
 
 // Respondent submits defense
 app.post('/api/disputes/:id/respond', authMiddleware, async (req, res) => {
@@ -4606,7 +4771,7 @@ app.post('/api/disputes/:id/accept', authMiddleware, async (req, res) => {
 
         // Send email notification to plaintiff
         await emailService.notifyCaseAccepted(dispute);
-        
+
         // Send in-app notification to plaintiff
         const plaintiffUser = await User.findOne({ where: { email: dispute.plaintiffEmail } });
         if (plaintiffUser) {
@@ -4628,14 +4793,14 @@ app.get('/api/disputes/:id/messages', authMiddleware, async (req, res) => {
     try {
         const { page = 1, limit = 20 } = req.query;
         const offset = (parseInt(page) - 1) * parseInt(limit);
-        
+
         const { count, rows: messages } = await Message.findAndCountAll({
             where: { disputeId: req.params.id },
             order: [['createdAt', 'ASC']],
             limit: parseInt(limit),
             offset: offset
         });
-        
+
         res.json({
             messages,
             pagination: {
@@ -4651,108 +4816,108 @@ app.get('/api/disputes/:id/messages', authMiddleware, async (req, res) => {
 });
 
 // Send a message in a dispute
-app.post('/api/disputes/:id/messages', 
-    authMiddleware, 
+app.post('/api/disputes/:id/messages',
+    authMiddleware,
     messageLimiter,
-    upload.single('attachment'), 
+    upload.single('attachment'),
     [
         body('content').optional().trim().isLength({ max: 1000 }).withMessage('Message must be under 1000 characters'),
     ],
     async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ error: errors.array()[0].msg });
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: errors.array()[0].msg });
+            }
+
+            const { content } = req.body;
+            const dispute = await Dispute.findByPk(req.params.id);
+            if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+            const currentUser = await User.findByPk(req.user.id);
+
+            // Determine role
+            let senderRole = 'unknown';
+            let senderName = currentUser.username;
+
+            if (currentUser.email === dispute.plaintiffEmail) {
+                senderRole = 'plaintiff';
+                senderName = dispute.plaintiffName;
+            } else if (currentUser.email === dispute.respondentEmail) {
+                senderRole = 'defendant';
+                senderName = dispute.respondentName;
+            } else if (currentUser.role === 'Admin') {
+                senderRole = 'admin';
+                senderName = 'Admin';
+            } else {
+                return res.status(403).json({ error: 'You are not a party to this dispute.' });
+            }
+
+            // Check if defendant has accepted (only plaintiff can message before acceptance)
+            if (!dispute.respondentAccepted && senderRole === 'defendant') {
+                return res.status(403).json({ error: 'You must accept the case before sending messages.' });
+            }
+
+            const message = await Message.create({
+                disputeId: dispute.id,
+                senderId: currentUser.id,
+                senderName,
+                senderRole,
+                content,
+                attachmentPath: req.file ? req.file.path : null
+            });
+
+            // Audit log: Message sent
+            await logAuditEvent({
+                action: req.file ? AuditActions.ATTACHMENT_UPLOAD : AuditActions.MESSAGE_SEND,
+                category: AuditCategories.MESSAGE,
+                user: { id: currentUser.id, email: currentUser.email, username: senderName, role: senderRole },
+                resourceType: 'DISPUTE',
+                resourceId: dispute.id,
+                description: `${senderRole.toUpperCase()} sent message in case #${dispute.id}${req.file ? ' (with attachment)' : ''}`,
+                metadata: {
+                    messageId: message.id,
+                    hasAttachment: !!req.file,
+                    contentLength: content?.length || 0
+                },
+                request: req,
+                status: 'SUCCESS'
+            });
+
+            // Emit real-time message to all users in the dispute room
+            const emitToDispute = req.app.get('emitToDispute');
+            emitToDispute(dispute.id, 'message:new', {
+                id: message.id,
+                disputeId: message.disputeId,
+                senderId: message.senderId,
+                senderName: message.senderName,
+                senderRole: message.senderRole,
+                content: message.content,
+                attachmentPath: message.attachmentPath,
+                createdAt: message.createdAt
+            });
+
+            // Send in-app notification to other party
+            const recipientEmail = currentUser.email === dispute.plaintiffEmail ?
+                dispute.respondentEmail : dispute.plaintiffEmail;
+            const recipientUser = await User.findOne({ where: { email: recipientEmail } });
+            if (recipientUser) {
+                await notificationService.notifyNewMessage(
+                    dispute.id,
+                    recipientUser.id,
+                    currentUser.username,
+                    content
+                );
+            }
+
+            // Check if we need to trigger AI analysis (after 10 messages)
+            checkAndTriggerAI(dispute.id);
+
+            res.json(message);
+        } catch (error) {
+            res.status(500).json({ error: error.message });
         }
-        
-        const { content } = req.body;
-        const dispute = await Dispute.findByPk(req.params.id);
-        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
-
-        const currentUser = await User.findByPk(req.user.id);
-
-        // Determine role
-        let senderRole = 'unknown';
-        let senderName = currentUser.username;
-
-        if (currentUser.email === dispute.plaintiffEmail) {
-            senderRole = 'plaintiff';
-            senderName = dispute.plaintiffName;
-        } else if (currentUser.email === dispute.respondentEmail) {
-            senderRole = 'defendant';
-            senderName = dispute.respondentName;
-        } else if (currentUser.role === 'Admin') {
-            senderRole = 'admin';
-            senderName = 'Admin';
-        } else {
-            return res.status(403).json({ error: 'You are not a party to this dispute.' });
-        }
-
-        // Check if defendant has accepted (only plaintiff can message before acceptance)
-        if (!dispute.respondentAccepted && senderRole === 'defendant') {
-            return res.status(403).json({ error: 'You must accept the case before sending messages.' });
-        }
-
-        const message = await Message.create({
-            disputeId: dispute.id,
-            senderId: currentUser.id,
-            senderName,
-            senderRole,
-            content,
-            attachmentPath: req.file ? req.file.filename : null
-        });
-
-        // Audit log: Message sent
-        await logAuditEvent({
-            action: req.file ? AuditActions.ATTACHMENT_UPLOAD : AuditActions.MESSAGE_SEND,
-            category: AuditCategories.MESSAGE,
-            user: { id: currentUser.id, email: currentUser.email, username: senderName, role: senderRole },
-            resourceType: 'DISPUTE',
-            resourceId: dispute.id,
-            description: `${senderRole.toUpperCase()} sent message in case #${dispute.id}${req.file ? ' (with attachment)' : ''}`,
-            metadata: {
-                messageId: message.id,
-                hasAttachment: !!req.file,
-                contentLength: content?.length || 0
-            },
-            request: req,
-            status: 'SUCCESS'
-        });
-
-        // Emit real-time message to all users in the dispute room
-        const emitToDispute = req.app.get('emitToDispute');
-        emitToDispute(dispute.id, 'message:new', {
-            id: message.id,
-            disputeId: message.disputeId,
-            senderId: message.senderId,
-            senderName: message.senderName,
-            senderRole: message.senderRole,
-            content: message.content,
-            attachmentPath: message.attachmentPath,
-            createdAt: message.createdAt
-        });
-        
-        // Send in-app notification to other party
-        const recipientEmail = currentUser.email === dispute.plaintiffEmail ? 
-            dispute.respondentEmail : dispute.plaintiffEmail;
-        const recipientUser = await User.findOne({ where: { email: recipientEmail } });
-        if (recipientUser) {
-            await notificationService.notifyNewMessage(
-                dispute.id,
-                recipientUser.id,
-                currentUser.username,
-                content
-            );
-        }
-
-        // Check if we need to trigger AI analysis (after 10 messages)
-        checkAndTriggerAI(dispute.id);
-
-        res.json(message);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
+    });
 
 // Identity Verification Route
 app.post('/api/auth/verify', authMiddleware, upload.fields([{ name: 'idCard', maxCount: 1 }, { name: 'selfie', maxCount: 1 }]), async (req, res) => {
@@ -4769,16 +4934,16 @@ app.post('/api/auth/verify', authMiddleware, upload.fields([{ name: 'idCard', ma
         const idCardPath = req.files.idCard[0].filename;
         const selfiePath = req.files.selfie[0].filename;
 
-        logInfo('Starting identity verification', { 
-            userId: user.id, 
-            username: user.username 
+        logInfo('Starting identity verification', {
+            userId: user.id,
+            username: user.username
         });
 
         // Enhanced AI Verification with multiple steps
         const verification = await verifyIdentityWithAI(user.username, idCardPath, selfiePath);
-        
-        logInfo('Verification completed', { 
-            userId: user.id, 
+
+        logInfo('Verification completed', {
+            userId: user.id,
             verified: verification.verified,
             confidence: verification.confidence,
             verificationId: verification.verificationId
@@ -4952,7 +5117,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                 dispute.resolutionNotes = `Agreed on: ${chosenSolution.title}. Proceeding to formal verification and signing.`;
 
                 await dispute.save();
-                
+
                 // Emit real-time update for agreement reached
                 const io = global.io;
                 if (io) {
@@ -4963,7 +5128,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                         agreedSolution: chosenSolution
                     });
                 }
-                
+
                 return res.json({ dispute, message: `Agreement reached! Please proceed to the Resolution Step to verify details and sign.` });
             }
             // Case 2: Mismatch or Rejection
@@ -4976,7 +5141,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                     dispute.aiSolutions = null;
                     dispute.status = 'Reanalyzing';
                     await dispute.save();
-                    
+
                     // Emit status change for reanalyzing
                     const ioReanalyze = global.io;
                     if (ioReanalyze) {
@@ -4999,7 +5164,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                         dispute.aiSolutions = JSON.stringify(analysis.solutions);
                         dispute.status = 'AwaitingDecision';
                         await dispute.save();
-                        
+
                         // Emit real-time update for reanalysis
                         const io = global.io;
                         if (io) {
@@ -5010,7 +5175,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                                 isReanalysis: true
                             });
                         }
-                        
+
                         // Send email notification to both parties about reanalysis
                         await emailService.notifyReanalysisRequested(dispute, dispute.reanalysisCount);
                     }
@@ -5027,7 +5192,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                     dispute.courtReason = 'Parties could not agree on AI-mediated solutions after two rounds. Forwarded for judicial review.';
                     dispute.status = 'ForwardedToCourt';
                     await dispute.save();
-                    
+
                     // Emit real-time update for court forwarding
                     const io = global.io;
                     if (io) {
@@ -5046,7 +5211,7 @@ app.post('/api/disputes/:id/decision', authMiddleware, async (req, res) => {
                 }
             }
         }
-        
+
         // Emit real-time update for vote recorded
         const io = global.io;
         if (io) {
@@ -5071,11 +5236,11 @@ app.post('/api/disputes/:id/request-reanalysis', authMiddleware, async (req, res
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        
+
         // Check if user is a party to this dispute
         const isPlaintiff = currentUser.email === dispute.plaintiffEmail;
         const isDefendant = currentUser.email === dispute.respondentEmail;
-        
+
         if (!isPlaintiff && !isDefendant && req.user.role !== 'Admin') {
             return res.status(403).json({ error: 'Only parties involved can request reanalysis' });
         }
@@ -5087,8 +5252,8 @@ app.post('/api/disputes/:id/request-reanalysis', authMiddleware, async (req, res
 
         // Check reanalysis limit (max 3 times: 0=original, 1=first reanalysis, 2=second reanalysis)
         if (dispute.reanalysisCount >= 2) {
-            return res.status(400).json({ 
-                error: 'Maximum reanalysis limit reached (3 attempts total)', 
+            return res.status(400).json({
+                error: 'Maximum reanalysis limit reached (3 attempts total)',
                 message: 'No more reanalysis attempts available. Please choose from existing solutions or proceed to court.'
             });
         }
@@ -5108,19 +5273,19 @@ app.post('/api/disputes/:id/request-reanalysis', authMiddleware, async (req, res
         });
 
         console.log(`Manual reanalysis requested for dispute ${dispute.id} (Count: ${dispute.reanalysisCount})`);
-        
+
         const analysis = await analyzeDisputeWithAI(dispute, messages, true);
         if (analysis) {
             dispute.aiAnalysis = `REANALYSIS ${dispute.reanalysisCount} (User requested new alternatives):\n` + analysis.summary + '\n\n' + analysis.legalAssessment;
             dispute.aiSolutions = JSON.stringify(analysis.solutions);
             dispute.status = 'AwaitingDecision';
             await dispute.save();
-            
+
             // Send email notification to both parties
             await emailService.notifyReanalysisRequested(dispute, dispute.reanalysisCount);
-            
-            res.json({ 
-                dispute, 
+
+            res.json({
+                dispute,
                 message: `Reanalysis ${dispute.reanalysisCount} complete. New AI solutions generated.`,
                 reanalysisCount: dispute.reanalysisCount,
                 remainingAttempts: 2 - dispute.reanalysisCount
@@ -5165,12 +5330,12 @@ app.get('/api/disputes', async (req, res) => {
                 { plaintiffName: { [Op.iLike]: `%${search}%` } },
                 { respondentName: { [Op.iLike]: `%${search}%` } }
             ];
-            
+
             // Add ID search only if search is numeric
             if (!isNaN(search)) {
                 searchConditions.push({ id: parseInt(search) });
             }
-            
+
             where[Op.or] = searchConditions;
         }
 
@@ -5211,42 +5376,42 @@ app.post('/api/disputes/:id/force-ai-analysis', authMiddleware, async (req, res)
     try {
         const { id } = req.params;
         const dispute = await Dispute.findByPk(id);
-        
+
         if (!dispute) {
             return res.status(404).json({ error: 'Dispute not found' });
         }
-        
+
         // Check if user is a party to this dispute or admin
         const user = await User.findByPk(req.user.id);
         if (!user.isAdmin && dispute.plaintiffId !== req.user.id && dispute.respondentId !== req.user.id) {
             return res.status(403).json({ error: 'Access denied' });
         }
-        
+
         console.log('=== Force AI Analysis Requested ===');
         console.log('Dispute ID:', id);
         console.log('API_KEY configured:', API_KEY !== 'API_KEY_MISSING');
-        
+
         const messages = await Message.findAll({
             where: { disputeId: id },
             order: [['createdAt', 'ASC']]
         });
-        
+
         console.log('Message count:', messages.length);
-        
+
         // Clear existing AI solutions to force reanalysis
         dispute.aiSolutions = null;
         dispute.aiAnalysis = null;
         await dispute.save();
-        
+
         // Trigger AI analysis
         const analysis = await analyzeDisputeWithAI(dispute, messages, true);
-        
+
         if (analysis) {
             dispute.aiAnalysis = analysis.summary + '\n\n' + analysis.legalAssessment;
             dispute.aiSolutions = JSON.stringify(analysis.solutions);
             dispute.status = 'AwaitingDecision';
             await dispute.save();
-            
+
             // Emit real-time update
             const io = global.io;
             if (io) {
@@ -5256,7 +5421,7 @@ app.post('/api/disputes/:id/force-ai-analysis', authMiddleware, async (req, res)
                     aiSolutions: analysis.solutions
                 });
             }
-            
+
             res.json({
                 success: true,
                 message: 'AI analysis completed successfully',
@@ -5302,12 +5467,12 @@ app.get('/api/disputes/:id/history', authMiddleware, async (req, res) => {
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        
+
         // Only allow parties or admin to view case history
-        const isParty = currentUser.email === dispute.plaintiffEmail || 
-                        currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail;
         const isAdmin = req.user.role === 'Admin';
-        
+
         if (!isParty && !isAdmin) {
             return res.status(403).json({ error: 'Not authorized to view case history' });
         }
@@ -5348,12 +5513,12 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        
+
         // Only allow parties or admin to upload evidence
         const isPlaintiff = currentUser.email === dispute.plaintiffEmail;
         const isDefendant = currentUser.email === dispute.respondentEmail;
         const isAdmin = req.user.role === 'Admin';
-        
+
         if (!isPlaintiff && !isDefendant && !isAdmin) {
             return res.status(403).json({ error: 'Not authorized to upload evidence for this case' });
         }
@@ -5361,12 +5526,12 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-        
+
         // Log file upload for security audit
         logInfo('Evidence file uploaded', {
             disputeId: dispute.id,
             userId: req.user.id,
-            filename: req.file.filename,
+            filename: req.file.path || req.file.filename,
             size: req.file.size,
             mimetype: req.file.mimetype
         });
@@ -5388,7 +5553,7 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
             uploadedBy: currentUser.id,
             uploaderName: currentUser.username,
             uploaderRole,
-            fileName: req.file.filename,
+            fileName: req.file.path,
             originalName: req.file.originalname,
             fileSize: req.file.size,
             mimeType: req.file.mimetype,
@@ -5407,7 +5572,7 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
             description: `${uploaderRole.toUpperCase()} uploaded evidence "${req.file.originalname}" for case #${dispute.id}`,
             metadata: {
                 disputeId: dispute.id,
-                fileName: req.file.filename,
+                fileName: req.file.path,
                 originalName: req.file.originalname,
                 fileSize: req.file.size,
                 fileType,
@@ -5417,11 +5582,11 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
             request: req,
             status: 'SUCCESS'
         });
-        logInfo('Evidence uploaded', { 
-            evidenceId: evidence.id, 
-            disputeId: dispute.id, 
+        logInfo('Evidence uploaded', {
+            evidenceId: evidence.id,
+            disputeId: dispute.id,
             uploadedBy: currentUser.username,
-            fileType 
+            fileType
         });
 
         // Emit real-time notification
@@ -5438,9 +5603,9 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
                 createdAt: evidence.createdAt
             }
         });
-        
+
         // Send in-app notification to other party
-        const recipientEmail = currentUser.email === dispute.plaintiffEmail ? 
+        const recipientEmail = currentUser.email === dispute.plaintiffEmail ?
             dispute.respondentEmail : dispute.plaintiffEmail;
         const recipientUser = await User.findOne({ where: { email: recipientEmail } });
         if (recipientUser) {
@@ -5470,11 +5635,11 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
             });
         } else {
             // Mark as not applicable for non-image files
-            evidence.update({ ocrStatus: 'not_applicable' }).catch(() => {});
+            evidence.update({ ocrStatus: 'not_applicable' }).catch(() => { });
         }
 
-        res.status(201).json({ 
-            message: 'Evidence uploaded successfully', 
+        res.status(201).json({
+            message: 'Evidence uploaded successfully',
             evidence,
             ocrStatus: isOcrSupported(req.file.mimetype) ? 'processing' : 'not_applicable'
         });
@@ -5491,12 +5656,12 @@ app.get('/api/disputes/:id/evidence', authMiddleware, async (req, res) => {
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        
+
         // Only allow parties or admin to view evidence
-        const isParty = currentUser.email === dispute.plaintiffEmail || 
-                        currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail;
         const isAdmin = req.user.role === 'Admin';
-        
+
         if (!isParty && !isAdmin) {
             return res.status(403).json({ error: 'Not authorized to view evidence for this case' });
         }
@@ -5549,13 +5714,13 @@ app.get('/api/disputes/:id/evidence/:evidenceId/download', authMiddlewareForMedi
 
         const isAdmin = req.user.role === 'Admin';
         const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
-        
+
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
         }
 
         const filePath = path.join(process.cwd(), 'uploads', evidence.fileName);
-        
+
         if (!fs.existsSync(filePath)) {
             logError('Evidence file not found on disk', { evidenceId: evidence.id, filePath });
             return res.status(404).json({ error: 'Evidence file not found' });
@@ -5566,7 +5731,7 @@ app.get('/api/disputes/:id/evidence/:evidenceId/download', authMiddlewareForMedi
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(evidence.originalName)}"`);
         res.setHeader('Content-Length', evidence.fileSize);
         res.setHeader('X-Content-Type-Options', 'nosniff');
-        
+
         // Stream the file
         const fileStream = fs.createReadStream(filePath);
         fileStream.pipe(res);
@@ -5610,13 +5775,19 @@ app.get('/api/disputes/:id/evidence/:evidenceId/preview', authMiddlewareForMedia
 
         const isAdmin = req.user.role === 'Admin';
         const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
-        
+
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
         }
 
+        if (evidence.fileName.startsWith('http')) {
+            // If it's a Cloudinary URL, redirect to it
+            // Note: If private, you might need to generate a signed URL here
+            return res.redirect(evidence.fileName);
+        }
+
         const filePath = path.join(process.cwd(), 'uploads', evidence.fileName);
-        
+
         if (!fs.existsSync(filePath)) {
             logError('Evidence file not found on disk', { evidenceId: evidence.id, filePath });
             return res.status(404).json({ error: 'Evidence file not found' });
@@ -5631,9 +5802,9 @@ app.get('/api/disputes/:id/evidence/:evidenceId/preview', authMiddlewareForMedia
         ];
 
         if (!previewableTypes.includes(evidence.mimeType)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'This file type cannot be previewed. Please download it instead.',
-                canPreview: false 
+                canPreview: false
             });
         }
 
@@ -5643,7 +5814,7 @@ app.get('/api/disputes/:id/evidence/:evidenceId/preview', authMiddlewareForMedia
         res.setHeader('Content-Length', evidence.fileSize);
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cache-Control', 'private, max-age=3600'); // Cache for 1 hour
-        
+
         // Stream the file
         const fileStream = fs.createReadStream(filePath);
         fileStream.pipe(res);
@@ -5670,7 +5841,7 @@ app.get('/api/disputes/:id/evidence/:evidenceId', authMiddleware, async (req, re
 
         const isAdmin = req.user.role === 'Admin';
         const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
-        
+
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
         }
@@ -5742,10 +5913,10 @@ app.delete('/api/disputes/:id/evidence/:evidenceId', authMiddleware, async (req,
             request: req,
             status: 'SUCCESS'
         });
-        logInfo('Evidence deleted', { 
-            evidenceId: evidenceData.id, 
+        logInfo('Evidence deleted', {
+            evidenceId: evidenceData.id,
             disputeId: evidenceData.disputeId,
-            deletedBy: currentUser.username 
+            deletedBy: currentUser.username
         });
 
         res.json({ message: 'Evidence deleted successfully' });
@@ -5773,8 +5944,8 @@ app.get('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (req
 
         const isAdmin = req.user.role === 'Admin';
         const currentUser = await User.findByPk(req.user.id);
-        const isParty = currentUser.email === dispute.plaintiffEmail || 
-                       currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
@@ -5811,8 +5982,8 @@ app.post('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (re
 
         const isAdmin = req.user.role === 'Admin';
         const currentUser = await User.findByPk(req.user.id);
-        const isParty = currentUser.email === dispute.plaintiffEmail || 
-                       currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to process this evidence' });
@@ -5820,8 +5991,8 @@ app.post('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (re
 
         // Check if file type supports OCR
         if (!isOcrSupported(evidence.mimeType)) {
-            return res.status(400).json({ 
-                error: 'File type not supported for OCR', 
+            return res.status(400).json({
+                error: 'File type not supported for OCR',
                 mimeType: evidence.mimeType,
                 supported: OCR_SUPPORTED_MIMETYPES
             });
@@ -5871,9 +6042,9 @@ app.post('/api/disputes/:id/evidence/:evidenceId/ocr', authMiddleware, async (re
                 confidence: result.confidence
             });
         } else {
-            res.status(500).json({ 
-                error: 'OCR processing failed', 
-                details: result.error 
+            res.status(500).json({
+                error: 'OCR processing failed',
+                details: result.error
             });
         }
     } catch (error) {
@@ -5891,8 +6062,8 @@ app.post('/api/disputes/:id/ocr/process-all', authMiddleware, async (req, res) =
         // Only admin or parties can trigger batch OCR
         const isAdmin = req.user.role === 'Admin';
         const currentUser = await User.findByPk(req.user.id);
-        const isParty = currentUser.email === dispute.plaintiffEmail || 
-                       currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized' });
@@ -5973,8 +6144,8 @@ app.post('/api/disputes/:id/verify-details', authMiddleware, async (req, res) =>
 
         if (!confirmed) return res.status(400).json({ error: 'You must confirm your details.' });
 
-        const role = currentUser.email === dispute.plaintiffEmail ? 'plaintiff' : 
-                     currentUser.email === dispute.respondentEmail ? 'defendant' : null;
+        const role = currentUser.email === dispute.plaintiffEmail ? 'plaintiff' :
+            currentUser.email === dispute.respondentEmail ? 'defendant' : null;
 
         if (currentUser.email === dispute.plaintiffEmail) {
             dispute.plaintiffVerified = true;
@@ -6017,13 +6188,13 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
         // Expecting a file upload for signature image
         if (!req.file) return res.status(400).json({ error: 'Signature image required' });
 
-        const role = currentUser.email === dispute.plaintiffEmail ? 'plaintiff' : 
-                     currentUser.email === dispute.respondentEmail ? 'defendant' : null;
+        const role = currentUser.email === dispute.plaintiffEmail ? 'plaintiff' :
+            currentUser.email === dispute.respondentEmail ? 'defendant' : null;
 
         if (currentUser.email === dispute.plaintiffEmail) {
-            dispute.plaintiffSignature = req.file.filename;
+            dispute.plaintiffSignature = req.file.path || req.file.filename;
         } else if (currentUser.email === dispute.respondentEmail) {
-            dispute.respondentSignature = req.file.filename;
+            dispute.respondentSignature = req.file.path || req.file.filename;
         } else {
             return res.status(403).json({ error: 'Not a party' });
         }
@@ -6039,14 +6210,14 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
             description: `${role.toUpperCase()} submitted digital signature for case #${dispute.id}`,
             metadata: {
                 role,
-                signatureFile: req.file.filename,
+                signatureFile: req.file.path || req.file.filename,
                 bothSigned: !!(dispute.plaintiffSignature && dispute.respondentSignature)
             },
             request: req,
             status: 'SUCCESS'
         });
         logInfo('Signature submitted', { disputeId: dispute.id, role });
-        
+
         // Send in-app notification to other party
         const recipientEmail = role === 'plaintiff' ? dispute.respondentEmail : dispute.plaintiffEmail;
         const recipientUser = await User.findOne({ where: { email: recipientEmail } });
@@ -6098,7 +6269,7 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
                 status: 'SUCCESS'
             });
             logInfo('Agreement PDF generated', { disputeId: dispute.id, documentId });
-            
+
             // Emit real-time update for agreement generation
             if (io) {
                 io.to(`dispute:${dispute.id}`).emit('dispute:agreement-generated', {
@@ -6109,7 +6280,7 @@ app.post('/api/disputes/:id/sign', authMiddleware, upload.single('signature'), a
                     agreementDocPath: dispute.agreementDocPath,
                 });
             }
-            
+
             // Send email notification to both parties
             await emailService.notifyResolutionAccepted(dispute);
         }
@@ -6149,16 +6320,16 @@ app.post('/api/admin/approve-resolution/:id', authMiddleware, async (req, res) =
             request: req,
             status: 'SUCCESS'
         });
-        logInfo('Admin approved resolution', { 
-            disputeId: dispute.id, 
+        logInfo('Admin approved resolution', {
+            disputeId: dispute.id,
             adminId: req.user.id,
-            documentId: dispute.documentId 
+            documentId: dispute.documentId
         });
 
         // Send email notification to both parties
         await emailService.notifyCaseResolved(dispute);
         logInfo(`Case ${dispute.id} resolved - Email notifications sent to both parties`);
-        
+
         // Send in-app notifications to both parties
         const plaintiffUser = await User.findOne({ where: { email: dispute.plaintiffEmail } });
         const respondentUser = await User.findOne({ where: { email: dispute.respondentEmail } });
@@ -6180,9 +6351,9 @@ app.post('/api/admin/approve-resolution/:id', authMiddleware, async (req, res) =
         }
 
         res.json({ message: 'Resolution finalized and agreement sent.', dispute });
-    } catch (e) { 
+    } catch (e) {
         logError('Admin approval failed', { error: e.message, disputeId: req.params.id });
-        res.status(500).json({ error: e.message }); 
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -6192,7 +6363,7 @@ app.post('/api/admin/forward-to-court/:id', authMiddleware, async (req, res) => 
         if (req.user.role !== 'Admin') return res.status(403).json({ error: 'Admin only' });
 
         const { courtType, courtName, courtLocation, reason } = req.body;
-        
+
         if (!courtType || !courtName || !courtLocation || !reason) {
             return res.status(400).json({ error: 'All court details are required' });
         }
@@ -6233,17 +6404,17 @@ app.post('/api/admin/forward-to-court/:id', authMiddleware, async (req, res) => 
             request: req,
             status: 'SUCCESS'
         });
-        logInfo(`Case #${dispute.id} forwarded to ${courtType} Court`, { 
+        logInfo(`Case #${dispute.id} forwarded to ${courtType} Court`, {
             disputeId: dispute.id,
-            courtName, 
+            courtName,
             courtLocation,
-            adminId: req.user.id 
+            adminId: req.user.id
         });
-        
+
         // Send email notification to both parties
         await emailService.notifyCourtForwarded(dispute);
         logInfo('Court forwarding email notifications sent to both parties', { disputeId: dispute.id });
-        
+
         // Send in-app notifications to both parties
         const plaintiffUser = await User.findOne({ where: { email: dispute.plaintiffEmail } });
         const respondentUser = await User.findOne({ where: { email: dispute.respondentEmail } });
@@ -6266,7 +6437,7 @@ app.post('/api/admin/forward-to-court/:id', authMiddleware, async (req, res) => 
             });
         }
 
-        res.json({ 
+        res.json({
             message: 'Case successfully forwarded to court',
             dispute,
             courtDetails: {
@@ -6276,9 +6447,9 @@ app.post('/api/admin/forward-to-court/:id', authMiddleware, async (req, res) => 
                 forwardedAt: dispute.courtForwardedAt
             }
         });
-    } catch (e) { 
+    } catch (e) {
         logError('Court forwarding error', { error: e.message, disputeId: req.params.id });
-        res.status(500).json({ error: e.message }); 
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -6294,7 +6465,7 @@ async function generateAgreementPDF(dispute, outputPath) {
             const documentId = uuidv4();
             const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
             const timestampISO = new Date().toISOString();
-            
+
             // Calculate document hash (will update after generation)
             const documentContent = JSON.stringify({
                 disputeId: dispute.id,
@@ -6499,13 +6670,13 @@ async function generateAgreementPDF(dispute, outputPath) {
             doc.fontSize(11).font('Helvetica-Bold').text('PARTY A (Complainant)');
             doc.moveDown(0.3);
             addBulletPoint(`Signed On: ${timestamp} IST`);
-            
+
             if (dispute.plaintiffSignature) {
                 doc.moveDown(0.3);
                 doc.fontSize(10).font('Helvetica').text('Digital Signature:');
                 try {
-                    doc.image(`uploads/${dispute.plaintiffSignature}`, { 
-                        width: 150, 
+                    doc.image(`uploads/${dispute.plaintiffSignature}`, {
+                        width: 150,
                         height: 75,
                         fit: [150, 75]
                     });
@@ -6519,13 +6690,13 @@ async function generateAgreementPDF(dispute, outputPath) {
             doc.fontSize(11).font('Helvetica-Bold').text('PARTY B (Respondent)');
             doc.moveDown(0.3);
             addBulletPoint(`Signed On: ${timestamp} IST`);
-            
+
             if (dispute.respondentSignature) {
                 doc.moveDown(0.3);
                 doc.fontSize(10).font('Helvetica').text('Digital Signature:');
                 try {
-                    doc.image(`uploads/${dispute.respondentSignature}`, { 
-                        width: 150, 
+                    doc.image(`uploads/${dispute.respondentSignature}`, {
+                        width: 150,
                         height: 75,
                         fit: [150, 75]
                     });
@@ -6597,9 +6768,9 @@ async function generateAgreementPDF(dispute, outputPath) {
             doc.end();
             stream.on('finish', () => resolve({ documentId, documentHash }));
             stream.on('error', reject);
-        } catch (e) { 
+        } catch (e) {
             console.error('PDF Generation Error:', e);
-            reject(e); 
+            reject(e);
         }
     });
 }
@@ -6607,7 +6778,7 @@ async function generateAgreementPDF(dispute, outputPath) {
 // Helper: Generate Case Summary PDF (can be generated at any stage)
 async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], auditLogs = []) {
     logInfo('Starting PDF generation', { disputeId: dispute?.id, messagesCount: messages?.length, evidenceCount: evidence?.length });
-    
+
     return new Promise(async (resolve, reject) => {
         try {
             // Validate dispute exists
@@ -6618,7 +6789,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
 
             const doc = new PDFDocument({ margin: 50, size: 'A4' });
             const chunks = [];
-            
+
             doc.on('data', chunk => chunks.push(chunk));
             doc.on('end', () => {
                 logInfo('PDF generation complete', { disputeId: dispute.id, bufferSize: chunks.reduce((acc, c) => acc + c.length, 0) });
@@ -6688,7 +6859,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
 
             // ===== PAGE 1: COVER PAGE =====
             doc.moveDown(2);
-            
+
             // Header with logo placeholder
             doc.fontSize(24).font('Helvetica-Bold').fillColor('#1e40af').text('MediaAI', { align: 'center' });
             doc.fontSize(12).font('Helvetica').fillColor('#6b7280').text('AI-Powered Dispute Resolution Platform', { align: 'center' });
@@ -6697,7 +6868,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
 
             addTitle('CASE SUMMARY REPORT', 20);
             doc.moveDown(0.5);
-            
+
             // Case ID Box
             doc.rect(150, doc.y, 295, 40).fillAndStroke('#f3f4f6', '#e5e7eb');
             doc.fillColor('black').fontSize(14).font('Helvetica-Bold').text(`Case #${dispute.id}`, 0, doc.y + 12, { align: 'center' });
@@ -6721,7 +6892,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
 
             // ===== PAGE 2: PARTY DETAILS =====
             doc.addPage();
-            
+
             addSectionHeader('1. PARTY DETAILS');
             doc.moveDown(0.3);
 
@@ -6763,18 +6934,18 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
             // ===== AI ANALYSIS =====
             if (dispute.aiAnalysis) {
                 addSectionHeader('3. AI ANALYSIS');
-                
+
                 try {
                     // Try to parse if it's JSON
-                    const analysis = typeof dispute.aiAnalysis === 'string' && dispute.aiAnalysis.startsWith('{') 
-                        ? JSON.parse(dispute.aiAnalysis) 
+                    const analysis = typeof dispute.aiAnalysis === 'string' && dispute.aiAnalysis.startsWith('{')
+                        ? JSON.parse(dispute.aiAnalysis)
                         : { summary: dispute.aiAnalysis };
-                    
+
                     if (analysis.summary) {
                         addSubHeader('Summary');
                         addNormalText(analysis.summary);
                     }
-                    
+
                     if (analysis.keyPoints && Array.isArray(analysis.keyPoints)) {
                         addSubHeader('Key Points');
                         analysis.keyPoints.forEach((point, i) => {
@@ -6795,15 +6966,15 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
             if (dispute.aiSolutions) {
                 doc.addPage();
                 addSectionHeader('4. PROPOSED SOLUTIONS');
-                
+
                 try {
                     const solutions = JSON.parse(dispute.aiSolutions);
                     solutions.forEach((solution, index) => {
                         const isChosen = dispute.plaintiffChoice === index || dispute.respondentChoice === index;
-                        
+
                         addSubHeader(`Option ${index + 1}: ${solution.title}${isChosen ? ' ✓ (Selected)' : ''}`);
                         addNormalText(solution.description);
-                        
+
                         if (solution.pros && Array.isArray(solution.pros)) {
                             doc.fontSize(10).font('Helvetica-Bold').text('Pros:', { indent: 10 });
                             solution.pros.forEach(pro => {
@@ -6811,7 +6982,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
                             });
                             doc.moveDown(0.2);
                         }
-                        
+
                         if (solution.cons && Array.isArray(solution.cons)) {
                             doc.fontSize(10).font('Helvetica-Bold').text('Cons:', { indent: 10 });
                             solution.cons.forEach(con => {
@@ -6855,7 +7026,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
                 addBulletPoint('Total Messages', messages.length.toString());
                 addBulletPoint('Date Range', `${new Date(messages[0]?.createdAt).toLocaleDateString('en-IN')} - ${new Date(messages[messages.length - 1]?.createdAt).toLocaleDateString('en-IN')}`);
                 doc.moveDown(0.5);
-                
+
                 // Show last 5 messages
                 addSubHeader('Recent Communications');
                 const recentMessages = messages.slice(-5);
@@ -6872,7 +7043,7 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
             // ===== RESOLUTION STATUS =====
             doc.addPage();
             addSectionHeader('7. RESOLUTION STATUS');
-            
+
             addBulletPoint('Current Status', statusInfo.label);
             addBulletPoint('Complainant Confirmed Details', dispute.plaintiffConfirmed ? 'Yes' : 'No');
             addBulletPoint('Respondent Confirmed Details', dispute.respondentConfirmed ? 'Yes' : 'No');
@@ -6902,10 +7073,10 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
             // ===== ACTIVITY LOG =====
             if (auditLogs.length > 0) {
                 addSectionHeader('8. ACTIVITY LOG (Last 10 Events)');
-                
+
                 auditLogs.slice(0, 10).forEach(log => {
                     doc.fontSize(9).font('Helvetica-Bold').text(
-                        new Date(log.createdAt).toLocaleString('en-IN'), 
+                        new Date(log.createdAt).toLocaleString('en-IN'),
                         { continued: true }
                     );
                     doc.font('Helvetica').text(` - ${log.action}`);
@@ -6956,9 +7127,9 @@ app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => 
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || 
-                       dispute.defendantId === req.user.id || 
-                       dispute.creatorId === req.user.id;
+        const isParty = dispute.plaintiffId === req.user.id ||
+            dispute.defendantId === req.user.id ||
+            dispute.creatorId === req.user.id;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this report' });
@@ -6976,9 +7147,9 @@ app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => 
                 order: [['createdAt', 'DESC']]
             }),
             AuditLog.findAll({
-                where: { 
+                where: {
                     resourceType: 'DISPUTE',
-                    resourceId: dispute.id 
+                    resourceId: dispute.id
                 },
                 order: [['createdAt', 'DESC']],
                 limit: 20
@@ -7043,8 +7214,8 @@ app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => 
         logError('Unsupported PDF generator result', { disputeId: dispute.id, pdfResult: typeof pdfResult });
         return res.status(500).json({ error: 'Failed to generate report' });
     } catch (error) {
-        logError('Failed to generate case summary report', { 
-            error: error.message, 
+        logError('Failed to generate case summary report', {
+            error: error.message,
             stack: error.stack,
             disputeId: req.params.id,
             userId: req.user?.id
@@ -7068,9 +7239,9 @@ app.get('/api/disputes/:id/report/agreement', authMiddlewareForMedia, async (req
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || 
-                       dispute.defendantId === req.user.id || 
-                       dispute.creatorId === req.user.id;
+        const isParty = dispute.plaintiffId === req.user.id ||
+            dispute.defendantId === req.user.id ||
+            dispute.creatorId === req.user.id;
 
         if (!isAdmin && !isParty) {
             logError('Unauthorized agreement download attempt', { disputeId: dispute.id, userId: req.user?.id });
@@ -7131,9 +7302,9 @@ app.get('/api/disputes/:id/report/agreement/preview', authMiddlewareForMedia, as
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || 
-                       dispute.defendantId === req.user.id || 
-                       dispute.creatorId === req.user.id;
+        const isParty = dispute.plaintiffId === req.user.id ||
+            dispute.defendantId === req.user.id ||
+            dispute.creatorId === req.user.id;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this document' });
@@ -7170,17 +7341,17 @@ sequelize.sync({ alter: true }).then(async () => {
     // Also sync the AuditLog and Notification models
     await AuditLog.sync({ alter: true });
     logInfo('AuditLog table synchronized');
-    
+
     await Notification.sync({ alter: true });
     logInfo('Notification table synchronized');
-    
+
     // Initialize notification service with models and socket.io
-    notificationService.initializeNotificationService(Notification, io, emitToUser);
-    
+    notificationService.initializeNotificationService(Notification, io, emitToUser, User);
+
     // Initialize session service with Session and User models
     sessionService.initialize(Session, User);
     logInfo('Session service initialized');
-    
+
     // Add database performance indexes
     await addDatabaseIndexes();
     logInfo('Database indexes added/verified');
@@ -7249,7 +7420,7 @@ sequelize.sync({ alter: true }).then(async () => {
 
     // Sentry error handler (must be after all routes)
     app.use(sentryErrorHandler);
-    
+
     // Global error handler
     app.use((err, req, res, next) => {
         // Capture error with Sentry
@@ -7258,7 +7429,7 @@ sequelize.sync({ alter: true }).then(async () => {
             method: req.method,
             severity: err.status >= 500 ? 'high' : 'low'
         }, req.user, req);
-        
+
         // Send error response
         const statusCode = err.status || 500;
         res.status(statusCode).json({

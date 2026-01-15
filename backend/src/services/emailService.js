@@ -456,6 +456,61 @@ const emailTemplates = {
             </body>
             </html>
         `
+    }),
+
+    // 8. Contact Reply Email - Notify User of Admin Response
+    contactReply: (name, email, originalMessage, replyMessage) => ({
+        to: email,
+        subject: 'Response to Your Inquiry - MediaAI Support',
+        html: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                    .header { background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                    .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+                    .message-box { background: #ffffff; border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin: 20px 0; }
+                    .reply-box { background: #eff6ff; border-left: 4px solid #3B82F6; padding: 20px; border-radius: 4px; margin: 20px 0; }
+                    .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 14px; }
+                    .label { font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: bold; margin-bottom: 5px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1 style="margin: 0; font-size: 24px;">Support Response</h1>
+                    </div>
+                    <div class="content">
+                        <p>Hi <strong>${name}</strong>,</p>
+                        
+                        <p>Thank you for contacting MediaAI Support. An administrator has replied to your inquiry.</p>
+                        
+                        <div class="label">Your Message:</div>
+                        <div class="message-box">
+                            <i style="color: #6b7280;">"${originalMessage}"</i>
+                        </div>
+                        
+                        <div class="label">Our Response:</div>
+                        <div class="reply-box">
+                            ${replyMessage}
+                        </div>
+                        
+                        <p>If you have any further questions, please don't hesitate to reach out again.</p>
+                        
+                        <p style="margin-top: 30px; text-align: center;">
+                            <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" style="color: #3B82F6; text-decoration: none;">Return to MediaAI</a>
+                        </p>
+                    </div>
+                    <div class="footer">
+                        <p>MediaAI Dispute Resolution Platform</p>
+                        <p style="font-size: 12px; color: #9ca3af;">This is an automated email. Please do not reply directly to this message regarding a new issue.</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `
     })
 };
 
@@ -797,6 +852,12 @@ export default {
                 </html>
             `
         });
+    },
+
+    // 12. Send contact reply email
+    sendContactReplyEmail: async (name, email, originalMessage, replyMessage) => {
+        const emailData = emailTemplates.contactReply(name, email, originalMessage, replyMessage);
+        return await sendEmail(emailData);
     },
 
     // Test function to verify email configuration

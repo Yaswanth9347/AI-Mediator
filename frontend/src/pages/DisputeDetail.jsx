@@ -20,12 +20,12 @@ export default function DisputeDetail() {
     const [aiSolutions, setAiSolutions] = useState([]);
     const [loading, setLoading] = useState(true);
     const messagesEndRef = useRef(null);
-    
+
     // Pagination for messages
     const [messagePage, setMessagePage] = useState(1);
     const [totalMessagePages, setTotalMessagePages] = useState(1);
     const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
-    
+
     // Socket.io for real-time updates
     const { socket, connected, joinDisputeRoom, leaveDisputeRoom, startTyping, stopTyping } = useSocket();
     const [typingUsers, setTypingUsers] = useState(new Set());
@@ -57,11 +57,11 @@ export default function DisputeDetail() {
 
             const pageToFetch = loadMore ? messagePage + 1 : 1;
             const msgs = await getMessages(id, { page: pageToFetch, limit: 20 });
-            
+
             // Handle both old and new API response formats
             const messagesData = msgs.data.messages || msgs.data;
             const paginationData = msgs.data.pagination;
-            
+
             if (loadMore) {
                 setMessages(prev => [...prev, ...messagesData]);
                 setMessagePage(pageToFetch);
@@ -69,7 +69,7 @@ export default function DisputeDetail() {
                 setMessages(messagesData);
                 setMessagePage(1);
             }
-            
+
             if (paginationData) {
                 setTotalMessagePages(paginationData.totalPages);
                 setMessageCount(paginationData.totalItems);
@@ -84,7 +84,7 @@ export default function DisputeDetail() {
             setLoading(false);
         }
     };
-    
+
     const loadMoreMessages = async () => {
         setLoadingMoreMessages(true);
         await fetchData(true);
@@ -119,7 +119,7 @@ export default function DisputeDetail() {
             // Check if this is our optimistic message being confirmed
             setMessages(prev => {
                 // Remove any pending version of this message and add the confirmed one
-                const filtered = prev.filter(m => 
+                const filtered = prev.filter(m =>
                     !(m.pending && m.content === message.content && m.senderId === message.senderId)
                 );
                 // Avoid duplicates
@@ -169,14 +169,14 @@ export default function DisputeDetail() {
         // Handle dispute status changes
         const handleStatusChanged = (data) => {
             console.log('Dispute status changed:', data);
-            setDispute(prev => prev ? { 
-                ...prev, 
+            setDispute(prev => prev ? {
+                ...prev,
                 status: data.status,
                 resolutionStatus: data.resolutionStatus || prev?.resolutionStatus,
                 forwardedToCourt: data.forwardedToCourt || prev?.forwardedToCourt,
                 courtType: data.courtType || prev?.courtType
             } : prev);
-            
+
             if (data.status === 'Reanalyzing') {
                 setAiSolutions([]);
                 toast.info('AI is generating new solutions...');
@@ -301,7 +301,7 @@ export default function DisputeDetail() {
 
         const messageContent = newMessage.trim();
         const userId = parseInt(localStorage.getItem('userId'));
-        
+
         // Optimistic UI: Add message immediately with pending state
         const optimisticMessage = {
             id: `pending-${Date.now()}`,
@@ -313,10 +313,10 @@ export default function DisputeDetail() {
             pending: true,
             attachmentPath: attachment ? attachment.name : null,
         };
-        
+
         setMessages(prev => [...prev, optimisticMessage]);
         setNewMessage('');
-        
+
         const formData = new FormData();
         formData.append('content', messageContent);
         if (attachment) formData.append('attachment', attachment);
@@ -339,16 +339,16 @@ export default function DisputeDetail() {
     // Handle typing indicator
     const handleMessageChange = (e) => {
         setNewMessage(e.target.value);
-        
+
         if (socket && connected && e.target.value.trim()) {
             // Start typing
             startTyping(id);
-            
+
             // Clear existing timeout
             if (typingTimeoutRef.current) {
                 clearTimeout(typingTimeoutRef.current);
             }
-            
+
             // Set timeout to stop typing after 2 seconds of inactivity
             typingTimeoutRef.current = setTimeout(() => {
                 stopTyping(id);
@@ -380,14 +380,14 @@ export default function DisputeDetail() {
 
     const handleRequestReanalysis = async () => {
         const remainingAttempts = 2 - (dispute.reanalysisCount || 0);
-        
+
         if (remainingAttempts <= 0) {
             toast.error('Maximum reanalysis limit reached (3 attempts total)');
             return;
         }
 
         const confirmMessage = `Request AI to reanalyze this case and generate new solutions?\n\nReanalysis Count: ${(dispute.reanalysisCount || 0) + 1} of 3\nRemaining Attempts: ${remainingAttempts - 1}\n\nNote: Your current choices will be reset.`;
-        
+
         if (!confirm(confirmMessage)) return;
 
         try {
@@ -460,10 +460,10 @@ export default function DisputeDetail() {
     // Show loading state
     if (loading || !dispute) {
         return (
-            <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+            <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                    <p className="text-white text-lg">Loading dispute details...</p>
+                    <p className="text-blue-300 text-lg">Loading dispute details...</p>
                 </div>
             </div>
         );
@@ -676,7 +676,7 @@ export default function DisputeDetail() {
                                             </p>
                                         )}
                                     </div>
-                                    <button 
+                                    <button
                                         onClick={handleRequestReanalysis}
                                         disabled={loading}
                                         className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
@@ -714,19 +714,14 @@ export default function DisputeDetail() {
             {/* Evidence Section */}
             {!dispute.forwardedToCourt && (
                 <div className="mt-6 mb-6">
-                    <EvidenceSection 
-                        disputeId={id} 
-                        isPlaintiff={isPlaintiff} 
-                        isDefendant={isDefendant} 
-                        isAdmin={isAdmin} 
+                    <EvidenceSection
+                        disputeId={id}
+                        isPlaintiff={isPlaintiff}
+                        isDefendant={isDefendant}
+                        isAdmin={isAdmin}
                     />
                 </div>
             )}
-
-            {/* Case History / Audit Trail Section */}
-            <div className="mt-6 mb-6">
-                <CaseHistory disputeId={id} />
-            </div>
 
             {/* Chat Section */}
             {(dispute.respondentAccepted || isPlaintiff || isAdmin) && !dispute.forwardedToCourt && (
@@ -764,21 +759,28 @@ export default function DisputeDetail() {
                                 </button>
                             </div>
                         )}
-                        
+
                         {messages.length === 0 ? <p className="text-center text-blue-300 py-10 text-sm">Start the conversation</p> :
                             messages.map((msg) => (
                                 <div key={msg.id} className={`flex justify-start ${msg.pending ? 'opacity-70' : ''}`}>
                                     <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${msg.senderRole === 'plaintiff' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : msg.senderRole === 'defendant' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : 'bg-slate-800/70 text-blue-100 border border-blue-800'}`}>
                                         <p className="text-xs font-semibold mb-1 text-blue-300">{msg.senderName} ({msg.senderRole})</p>
                                         <p className="text-xs sm:text-sm break-words">{msg.content}</p>
-                                        {msg.attachmentPath && !msg.pending && <img src={`http://localhost:5000/uploads/${msg.attachmentPath}`} alt="" className="mt-2 max-w-full rounded border border-blue-800" />}
+                                        {msg.attachmentPath && !msg.pending && (
+                                            <img
+                                                src={msg.attachmentPath.startsWith('http') ? msg.attachmentPath : `http://localhost:5000/uploads/${msg.attachmentPath}`}
+                                                alt=""
+                                                className="mt-2 max-w-full rounded border border-blue-800 cursor-pointer hover:border-blue-500 transition-colors"
+                                                onClick={() => window.open(msg.attachmentPath.startsWith('http') ? msg.attachmentPath : `http://localhost:5000/uploads/${msg.attachmentPath}`, '_blank')}
+                                            />
+                                        )}
                                         <div className="flex items-center gap-2 mt-1">
                                             <p className="text-xs text-blue-400">{new Date(msg.createdAt).toLocaleTimeString()}</p>
                                             {msg.pending && (
                                                 <span className="text-xs text-blue-400 italic flex items-center gap-1">
                                                     <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
-                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                                                     </svg>
                                                     Sending...
                                                 </span>
@@ -788,7 +790,7 @@ export default function DisputeDetail() {
                                 </div>
                             ))
                         }
-                        
+
                         {/* Typing indicator */}
                         {typingUsers.size > 0 && (
                             <div className="flex justify-start mb-2">
@@ -799,7 +801,7 @@ export default function DisputeDetail() {
                                 </div>
                             </div>
                         )}
-                        
+
                         <div ref={messagesEndRef} />
                     </div>
 
@@ -1039,7 +1041,7 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
                                     <p className="font-bold mb-3 flex items-center">
                                         <CheckCircle className="w-5 h-5 mr-2" /> Success! The dispute is officially resolved.
                                     </p>
-                                    
+
                                     {dispute.documentId && (
                                         <div className="mb-3 p-3 bg-slate-900/50 rounded border border-blue-800">
                                             <p className="text-xs font-semibold text-blue-300 mb-2">Settlement Document Details</p>
@@ -1052,7 +1054,7 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
                                             </div>
                                         </div>
                                     )}
-                                    
+
                                     {dispute.agreementDocPath && (
                                         <div className="flex gap-3">
                                             <button
@@ -1090,7 +1092,7 @@ function CourtForwardingModal({ dispute, onUpdate }) {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        
+
         if (!formData.courtName || !formData.courtLocation || !formData.reason) {
             toast.error('Please fill all fields');
             return;

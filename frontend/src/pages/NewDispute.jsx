@@ -89,7 +89,7 @@ export default function NewDispute() {
     const LabelClass = "block text-sm font-medium text-blue-200 mb-1.5";
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 py-8 px-4">
+        <div className="flex-1 py-8 px-4">
             <div className="max-w-3xl mx-auto">
                 {/* Header */}
                 <div className="text-center mb-8">

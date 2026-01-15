@@ -27,20 +27,21 @@ function ProtectedRoute({ children }) {
 function AdminRoute({ children }) {
   const token = localStorage.getItem('token');
   const role = localStorage.getItem('role');
-  
+
   if (!token) {
     return <Navigate to="/login" />;
   }
-  
+
   if (role !== 'Admin') {
     return <Navigate to="/dashboard" />;
   }
-  
+
   return children;
 }
 
 function Navbar() {
   const navigate = useNavigate();
+  const location = useLocation();
   const username = localStorage.getItem('username');
   const role = localStorage.getItem('role');
   const isAdmin = role === 'Admin';
@@ -48,6 +49,18 @@ function Navbar() {
   const handleLogout = () => {
     localStorage.clear();
     navigate('/login');
+  };
+
+  // Helper to check if link is active
+  const isActive = (path) => location.pathname === path;
+
+  // Active and inactive link classes
+  const getLinkClass = (path) => {
+    const baseClass = "flex items-center gap-1 px-3 py-2 rounded-md text-sm font-medium transition-colors";
+    if (isActive(path)) {
+      return `${baseClass} text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30`;
+    }
+    return `${baseClass} text-gray-500 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-white`;
   };
 
   return (
@@ -59,20 +72,20 @@ function Navbar() {
               <Scale className="w-8 h-8" />
               <span>AI Mediator</span>
             </Link>
-            <div className="hidden md:ml-8 md:flex md:space-x-8">
-              <Link to="/dashboard" className="flex items-center gap-1 text-gray-500 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+            <div className="hidden md:ml-8 md:flex md:space-x-4">
+              <Link to="/dashboard" className={getLinkClass('/dashboard')}>
                 <LayoutDashboard className="w-4 h-4" /> Dashboard
               </Link>
-              <Link to="/new" className="flex items-center gap-1 text-gray-500 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+              <Link to="/new" className={getLinkClass('/new')}>
                 <FilePlus className="w-4 h-4" /> New Dispute
               </Link>
               {isAdmin && (
-                <Link to="/admin" className="flex items-center gap-1 text-cyan-500 dark:text-cyan-400 hover:text-cyan-600 dark:hover:text-cyan-300 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Link to="/admin" className={getLinkClass('/admin')}>
                   <BarChart3 className="w-4 h-4" /> Admin Panel
                 </Link>
               )}
               {isAdmin && (
-                <Link to="/admin/users" className="flex items-center gap-1 text-purple-500 dark:text-purple-400 hover:text-purple-600 dark:hover:text-purple-300 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Link to="/admin/users" className={getLinkClass('/admin/users')}>
                   <Users className="w-4 h-4" /> Manage Users
                 </Link>
               )}
@@ -111,16 +124,25 @@ function AppContent() {
   const isLoggedIn = !!localStorage.getItem('token');
 
   // Show Navbar only on authenticated pages (exclude root, login, forgot-password, and reset-password)
-  const isPublicPage = ['/', '/login', '/forgot-password'].includes(location.pathname) || 
-                       location.pathname.startsWith('/reset-password');
+  const isPublicPage = ['/', '/login', '/forgot-password'].includes(location.pathname) ||
+    location.pathname.startsWith('/reset-password');
   const showNavbar = isLoggedIn && !isPublicPage;
 
+  // Determine background class based on page type
+  const getBackgroundClass = () => {
+    if (isPublicPage) {
+      return 'bg-gray-50 dark:bg-gray-900'; // Public pages keep their own backgrounds
+    }
+    // Authenticated pages use unified dark gradient
+    return 'bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900';
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 font-sans text-gray-900 dark:text-gray-100 transition-colors duration-200 flex flex-col">
+    <div className={`min-h-screen ${getBackgroundClass()} font-sans text-gray-900 dark:text-gray-100 transition-colors duration-200 flex flex-col`}>
       {showNavbar && <Navbar />}
       {showNavbar && <ConnectionStatusWrapper />}
 
-      <main className={`flex-grow ${showNavbar ? 'max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8' : ''}`}>
+      <main className={`flex-grow flex flex-col ${showNavbar ? '' : ''}`}>
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<Login />} />

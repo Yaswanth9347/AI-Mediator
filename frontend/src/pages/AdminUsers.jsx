@@ -18,11 +18,11 @@ export default function AdminUsers() {
     const [roleFilter, setRoleFilter] = useState('all');
     const [statusFilter, setStatusFilter] = useState('all');
     const [verificationFilter, setVerificationFilter] = useState('all');
-    
+
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
     const usersPerPage = 10;
-    
+
     // Modals
     const [selectedUser, setSelectedUser] = useState(null);
     const [showUserModal, setShowUserModal] = useState(false);
@@ -54,7 +54,7 @@ export default function AdminUsers() {
             const res = await getAllUsers();
             const userList = res.data?.users || [];
             setUsers(userList);
-            
+
             // Calculate stats
             setStats({
                 total: userList.length,
@@ -76,7 +76,7 @@ export default function AdminUsers() {
         // Search filter
         if (searchQuery) {
             const query = searchQuery.toLowerCase();
-            filtered = filtered.filter(user => 
+            filtered = filtered.filter(user =>
                 user.username?.toLowerCase().includes(query) ||
                 user.email?.toLowerCase().includes(query)
             );
@@ -155,7 +155,7 @@ export default function AdminUsers() {
 
     const handleDeleteUser = async () => {
         if (!selectedUser) return;
-        
+
         try {
             setActionLoading(true);
             await deleteUserAdmin(selectedUser.id);
@@ -176,7 +176,7 @@ export default function AdminUsers() {
             setSelectedUser(user);
             setLoadingActivity(true);
             setShowActivityModal(true);
-            
+
             const res = await getUserActivity(user.id);
             setUserActivity(res.data?.activities || []);
         } catch (error) {
@@ -259,98 +259,94 @@ export default function AdminUsers() {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center">
+            <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
-                    <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mx-auto mb-4" />
-                    <p className="text-gray-400">Loading users...</p>
+                    <Loader2 className="w-12 h-12 text-blue-400 animate-spin mx-auto mb-4" />
+                    <p className="text-blue-300">Loading users...</p>
                 </div>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
-            {/* Header */}
-            <div className="bg-gray-800/50 border-b border-gray-700/50">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <button
-                                onClick={() => navigate('/dashboard')}
-                                className="p-2 hover:bg-gray-700/50 rounded-lg transition-colors"
-                            >
-                                <ArrowLeft className="w-5 h-5 text-gray-400" />
-                            </button>
-                            <div>
-                                <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-                                    <Users className="w-7 h-7 text-indigo-400" />
-                                    User Management
-                                </h1>
-                                <p className="text-gray-400 text-sm mt-1">Manage users, roles, and permissions</p>
-                            </div>
-                        </div>
-                        <button
-                            onClick={fetchUsers}
-                            className="flex items-center gap-2 px-4 py-2 bg-gray-700/50 text-gray-300 rounded-lg hover:bg-gray-700 transition-colors"
-                        >
-                            <RefreshCw className="w-4 h-4" />
-                            Refresh
-                        </button>
-                    </div>
-                </div>
-            </div>
-
+        <div className="flex-1">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-4">
+                        <button
+                            onClick={() => navigate('/dashboard')}
+                            className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors"
+                        >
+                            <ArrowLeft className="w-5 h-5 text-blue-400" />
+                        </button>
+                        <div>
+                            <h1 className="text-2xl font-semibold text-blue-100 flex items-center gap-3">
+                                <Users className="w-7 h-7 text-blue-400" />
+                                User Management
+                            </h1>
+                            <p className="text-blue-300 text-sm mt-1">Manage users, roles, and permissions</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={fetchUsers}
+                        className="flex items-center gap-2 px-4 py-2.5 bg-slate-800/50 border border-blue-800 text-blue-100 rounded-lg hover:bg-slate-700/50 transition-colors"
+                    >
+                        <RefreshCw className="w-4 h-4" />
+                        Refresh
+                    </button>
+                </div>
+
                 {/* Stats Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-                    <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-5">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-5">
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-blue-500/20 rounded-lg">
                                 <Users className="w-6 h-6 text-blue-400" />
                             </div>
                             <div>
-                                <div className="text-2xl font-bold text-white">{stats.total}</div>
-                                <div className="text-sm text-gray-400">Total Users</div>
+                                <div className="text-2xl font-semibold text-blue-100">{stats.total}</div>
+                                <div className="text-sm text-blue-300">Total Users</div>
                             </div>
                         </div>
                     </div>
-                    <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-5">
+                    <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-5">
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-purple-500/20 rounded-lg">
                                 <ShieldCheck className="w-6 h-6 text-purple-400" />
                             </div>
                             <div>
-                                <div className="text-2xl font-bold text-white">{stats.admins}</div>
-                                <div className="text-sm text-gray-400">Admins</div>
+                                <div className="text-2xl font-semibold text-blue-100">{stats.admins}</div>
+                                <div className="text-sm text-blue-300">Admins</div>
                             </div>
                         </div>
                     </div>
-                    <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-5">
+                    <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-5">
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-green-500/20 rounded-lg">
                                 <CheckCircle className="w-6 h-6 text-green-400" />
                             </div>
                             <div>
-                                <div className="text-2xl font-bold text-white">{stats.verified}</div>
-                                <div className="text-sm text-gray-400">Verified</div>
+                                <div className="text-2xl font-semibold text-green-400">{stats.verified}</div>
+                                <div className="text-sm text-blue-300">Verified</div>
                             </div>
                         </div>
                     </div>
-                    <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-5">
+                    <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-5">
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-red-500/20 rounded-lg">
                                 <Ban className="w-6 h-6 text-red-400" />
                             </div>
                             <div>
-                                <div className="text-2xl font-bold text-white">{stats.suspended}</div>
-                                <div className="text-sm text-gray-400">Suspended</div>
+                                <div className="text-2xl font-semibold text-red-400">{stats.suspended}</div>
+                                <div className="text-sm text-blue-300">Suspended</div>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 {/* Filters */}
-                <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 p-4 mb-6">
+                <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-4 mb-6">
                     <div className="flex flex-col md:flex-row gap-4">
                         {/* Search */}
                         <div className="flex-1 relative">
@@ -401,17 +397,17 @@ export default function AdminUsers() {
                 </div>
 
                 {/* Users Table */}
-                <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 overflow-hidden">
+                <div className="bg-slate-800/50 rounded-lg border border-blue-800 overflow-hidden">
                     <div className="overflow-x-auto">
                         <table className="w-full">
                             <thead>
-                                <tr className="border-b border-gray-700/50">
-                                    <th className="text-left px-6 py-4 text-sm font-semibold text-gray-300">User</th>
-                                    <th className="text-left px-6 py-4 text-sm font-semibold text-gray-300">Role</th>
-                                    <th className="text-left px-6 py-4 text-sm font-semibold text-gray-300">Status</th>
-                                    <th className="text-left px-6 py-4 text-sm font-semibold text-gray-300">Verification</th>
-                                    <th className="text-left px-6 py-4 text-sm font-semibold text-gray-300">Joined</th>
-                                    <th className="text-right px-6 py-4 text-sm font-semibold text-gray-300">Actions</th>
+                                <tr className="border-b border-blue-800/50">
+                                    <th className="text-left px-6 py-4 text-sm font-semibold text-blue-200">User</th>
+                                    <th className="text-left px-6 py-4 text-sm font-semibold text-blue-200">Role</th>
+                                    <th className="text-left px-6 py-4 text-sm font-semibold text-blue-200">Status</th>
+                                    <th className="text-left px-6 py-4 text-sm font-semibold text-blue-200">Verification</th>
+                                    <th className="text-left px-6 py-4 text-sm font-semibold text-blue-200">Joined</th>
+                                    <th className="text-right px-6 py-4 text-sm font-semibold text-blue-200">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -501,11 +497,10 @@ export default function AdminUsers() {
                                         <button
                                             key={pageNum}
                                             onClick={() => setCurrentPage(pageNum)}
-                                            className={`px-3 py-1 rounded-lg transition-colors ${
-                                                currentPage === pageNum
-                                                    ? 'bg-indigo-600 text-white'
-                                                    : 'text-gray-400 hover:bg-gray-700/50'
-                                            }`}
+                                            className={`px-3 py-1 rounded-lg transition-colors ${currentPage === pageNum
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'text-gray-400 hover:bg-gray-700/50'
+                                                }`}
                                         >
                                             {pageNum}
                                         </button>
@@ -539,7 +534,7 @@ export default function AdminUsers() {
                                 </button>
                             </div>
                         </div>
-                        
+
                         <div className="p-6 space-y-6">
                             {/* User Info */}
                             <div className="flex items-center gap-4">
@@ -582,11 +577,10 @@ export default function AdminUsers() {
                                     <button
                                         onClick={() => handleRoleChange(selectedUser.id, 'User')}
                                         disabled={actionLoading || selectedUser.role === 'User'}
-                                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg transition-colors ${
-                                            selectedUser.role === 'User'
-                                                ? 'bg-blue-600 text-white'
-                                                : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
-                                        } disabled:opacity-50`}
+                                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg transition-colors ${selectedUser.role === 'User'
+                                            ? 'bg-blue-600 text-white'
+                                            : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
+                                            } disabled:opacity-50`}
                                     >
                                         <Shield className="w-4 h-4" />
                                         User
@@ -594,11 +588,10 @@ export default function AdminUsers() {
                                     <button
                                         onClick={() => handleRoleChange(selectedUser.id, 'Admin')}
                                         disabled={actionLoading || selectedUser.role === 'Admin'}
-                                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg transition-colors ${
-                                            selectedUser.role === 'Admin'
-                                                ? 'bg-purple-600 text-white'
-                                                : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
-                                        } disabled:opacity-50`}
+                                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg transition-colors ${selectedUser.role === 'Admin'
+                                            ? 'bg-purple-600 text-white'
+                                            : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
+                                            } disabled:opacity-50`}
                                     >
                                         <ShieldCheck className="w-4 h-4" />
                                         Admin
@@ -661,7 +654,7 @@ export default function AdminUsers() {
                                 </button>
                             </div>
                         </div>
-                        
+
                         <div className="p-6 overflow-y-auto flex-1">
                             {loadingActivity ? (
                                 <div className="text-center py-8">
@@ -689,8 +682,8 @@ export default function AdminUsers() {
                                             </div>
                                             {activity.details && (
                                                 <pre className="mt-2 text-xs text-gray-400 bg-gray-900/50 p-2 rounded overflow-x-auto">
-                                                    {typeof activity.details === 'string' 
-                                                        ? activity.details 
+                                                    {typeof activity.details === 'string'
+                                                        ? activity.details
                                                         : JSON.stringify(activity.details, null, 2)}
                                                 </pre>
                                             )}
@@ -718,7 +711,7 @@ export default function AdminUsers() {
                                 </div>
                             </div>
                         </div>
-                        
+
                         <div className="p-6">
                             <p className="text-gray-300 mb-4">
                                 Are you sure you want to permanently delete the user <strong className="text-white">{selectedUser.username}</strong>?
@@ -726,7 +719,7 @@ export default function AdminUsers() {
                             <p className="text-sm text-gray-400 mb-6">
                                 All user data including profile, disputes, and activity logs will be removed.
                             </p>
-                            
+
                             <div className="flex gap-3">
                                 <button
                                     onClick={() => setShowDeleteModal(false)}

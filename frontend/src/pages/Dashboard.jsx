@@ -10,18 +10,18 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [viewMode, setViewMode] = useState('all'); // 'all', 'my_cases', 'against_me'
     const [stats, setStats] = useState(null);
-    
+
     // Search & Filter States
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState('All');
     const [debouncedSearch, setDebouncedSearch] = useState('');
-    
+
     // Pagination States
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
     const [totalItems, setTotalItems] = useState(0);
     const [itemsPerPage, setItemsPerPage] = useState(9);
-    
+
     // Socket.io for online status and real-time updates
     const socketContext = useSocket();
     const { socket, onlineUsers } = socketContext || {};
@@ -51,18 +51,18 @@ export default function Dashboard() {
                     page: currentPage,
                     limit: itemsPerPage
                 };
-                
+
                 if (debouncedSearch) {
                     params.search = debouncedSearch;
                 }
-                
+
                 if (statusFilter && statusFilter !== 'All') {
                     params.status = statusFilter;
                 }
-                
+
                 const disputesRes = await getDisputes(params);
                 setDisputes(disputesRes.data.disputes || disputesRes.data);
-                
+
                 // Handle pagination data if available
                 if (disputesRes.data.pagination) {
                     setTotalPages(disputesRes.data.pagination.totalPages);
@@ -90,13 +90,13 @@ export default function Dashboard() {
         if (!socket) return;
 
         const handleDisputeAccepted = (updatedDispute) => {
-            setDisputes(prev => 
+            setDisputes(prev =>
                 prev.map(d => d.id === updatedDispute.id ? { ...d, ...updatedDispute } : d)
             );
         };
 
         const handleAiReady = ({ disputeId }) => {
-            setDisputes(prev => 
+            setDisputes(prev =>
                 prev.map(d => d.id === disputeId ? { ...d, aiSolutionsReady: true } : d)
             );
         };
@@ -156,7 +156,7 @@ export default function Dashboard() {
     };
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900">
+        <div className="flex-1">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {/* Header */}
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
@@ -230,31 +230,28 @@ export default function Dashboard() {
                     <div className="flex gap-1 mb-6 border-b border-blue-800">
                         <button
                             onClick={() => setViewMode('all')}
-                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${
-                                viewMode === 'all'
+                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${viewMode === 'all'
                                     ? 'text-blue-100 border-b-2 border-blue-500'
                                     : 'text-blue-400 hover:text-blue-300'
-                            }`}
+                                }`}
                         >
                             All Cases
                         </button>
                         <button
                             onClick={() => setViewMode('my_cases')}
-                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${
-                                viewMode === 'my_cases'
+                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${viewMode === 'my_cases'
                                     ? 'text-blue-100 border-b-2 border-blue-500'
                                     : 'text-blue-400 hover:text-blue-300'
-                            }`}
+                                }`}
                         >
                             Filed by Me
                         </button>
                         <button
                             onClick={() => setViewMode('against_me')}
-                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${
-                                viewMode === 'against_me'
+                            className={`px-4 py-2.5 font-medium transition-colors text-sm ${viewMode === 'against_me'
                                     ? 'text-blue-100 border-b-2 border-blue-500'
                                     : 'text-blue-400 hover:text-blue-300'
-                            }`}
+                                }`}
                         >
                             Against Me
                         </button>
@@ -303,24 +300,23 @@ export default function Dashboard() {
                                     {/* Card Header */}
                                     <div className="flex items-start justify-between mb-3">
                                         <h3 className="font-medium text-blue-100 text-base flex-1 pr-2 leading-snug">{dispute.title}</h3>
-                                        <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
-                                            dispute.forwardedToCourt || dispute.status === 'ForwardedToCourt'
+                                        <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${dispute.forwardedToCourt || dispute.status === 'ForwardedToCourt'
                                                 ? 'bg-orange-900/30 text-orange-300'
                                                 : dispute.status === 'Resolved'
-                                                ? 'bg-blue-900/30 text-blue-300'
-                                                : dispute.status === 'Active'
-                                                ? 'bg-green-900/30 text-green-300'
-                                                : dispute.status === 'Pending' && dispute.respondentEmail === currentUserEmail
-                                                ? 'bg-yellow-900/30 text-yellow-300'
-                                                : 'bg-slate-700 text-slate-300'
-                                        }`}>
+                                                    ? 'bg-blue-900/30 text-blue-300'
+                                                    : dispute.status === 'Active'
+                                                        ? 'bg-green-900/30 text-green-300'
+                                                        : dispute.status === 'Pending' && dispute.respondentEmail === currentUserEmail
+                                                            ? 'bg-yellow-900/30 text-yellow-300'
+                                                            : 'bg-slate-700 text-slate-300'
+                                            }`}>
                                             {statusBadge.text}
                                         </span>
                                     </div>
-                                    
+
                                     {/* Description */}
                                     <p className="text-sm text-blue-300 mb-4 line-clamp-2 leading-relaxed">{dispute.description}</p>
-                                    
+
                                     {/* Metadata */}
                                     <div className="flex items-center justify-between text-xs">
                                         <span className="text-blue-400">Case #{dispute.id}</span>
@@ -348,8 +344,8 @@ export default function Dashboard() {
                     <div className="text-center py-16 bg-slate-800/30 rounded-lg border border-blue-800/50 border-dashed">
                         <Scale className="w-12 h-12 text-blue-700 mx-auto mb-4" />
                         <p className="text-blue-300 mb-4 text-sm">
-                            {debouncedSearch || statusFilter !== 'All' 
-                                ? 'No disputes match your search criteria' 
+                            {debouncedSearch || statusFilter !== 'All'
+                                ? 'No disputes match your search criteria'
                                 : 'No disputes found'}
                         </p>
                         {!debouncedSearch && statusFilter === 'All' && (
@@ -363,14 +359,14 @@ export default function Dashboard() {
                         )}
                     </div>
                 )}
-                
+
                 {/* Pagination Controls */}
                 {totalPages > 1 && (
                     <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-800/30 border border-blue-800 rounded-lg p-4">
                         <div className="text-sm text-blue-300">
                             Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems}
                         </div>
-                        
+
                         <div className="flex items-center gap-2">
                             <button
                                 onClick={() => handlePageChange(currentPage - 1)}
@@ -379,7 +375,7 @@ export default function Dashboard() {
                             >
                                 <ChevronLeft className="w-5 h-5" />
                             </button>
-                            
+
                             <div className="flex gap-1">
                                 {[...Array(totalPages)].map((_, idx) => {
                                     const pageNum = idx + 1;
@@ -393,11 +389,10 @@ export default function Dashboard() {
                                             <button
                                                 key={pageNum}
                                                 onClick={() => handlePageChange(pageNum)}
-                                                className={`px-3 py-1.5 rounded-lg transition-colors text-sm ${
-                                                    currentPage === pageNum
+                                                className={`px-3 py-1.5 rounded-lg transition-colors text-sm ${currentPage === pageNum
                                                         ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white'
                                                         : 'border border-blue-800 text-blue-300 hover:bg-slate-700/50'
-                                                }`}
+                                                    }`}
                                             >
                                                 {pageNum}
                                             </button>
@@ -411,7 +406,7 @@ export default function Dashboard() {
                                     return null;
                                 })}
                             </div>
-                            
+
                             <button
                                 onClick={() => handlePageChange(currentPage + 1)}
                                 disabled={currentPage === totalPages}

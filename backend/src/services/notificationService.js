@@ -1,5 +1,7 @@
 import { logInfo, logError } from './logger.js';
 import { logAuditEvent, AuditActions, AuditCategories } from './auditService.js';
+import * as smsService from './smsService.js';
+
 
 /**
  * Notification Service
@@ -8,14 +10,16 @@ import { logAuditEvent, AuditActions, AuditCategories } from './auditService.js'
 
 // Notification will be imported from server.js context
 let Notification = null;
+let User = null;
 let io = null;
 let emitToUser = null;
 
 /**
  * Initialize notification service with models and socket.io
  */
-export function initializeNotificationService(notificationModel, socketIo, emitUserFn) {
+export function initializeNotificationService(notificationModel, socketIo, emitUserFn, userModel = null) {
     Notification = notificationModel;
+    User = userModel;
     io = socketIo;
     emitToUser = emitUserFn;
     logInfo('Notification service initialized');
@@ -81,7 +85,7 @@ export async function createNotification({
                 createdAt: notification.createdAt,
                 isRead: false
             });
-            
+
             // Also send updated unread count
             try {
                 const unreadCount = await Notification.count({
@@ -131,7 +135,7 @@ export async function createNotification({
  */
 export async function createBulkNotifications(userIds, notificationData) {
     const notifications = [];
-    
+
     for (const userId of userIds) {
         try {
             const notification = await createNotification({
@@ -153,8 +157,9 @@ export async function createBulkNotifications(userIds, notificationData) {
 /**
  * Notify about new dispute
  */
-export async function notifyDisputeCreated(disputeId, respondentUserId, plaintiffName) {
-    return createNotification({
+export async function notifyDisputeCreated(disputeId, respondentUserId, plaintiffName, disputeTitle) {
+    // Send in-app notification
+    const notification = await createNotification({
         userId: respondentUserId,
         type: 'dispute',
         title: 'New Dispute Filed',
@@ -163,13 +168,27 @@ export async function notifyDisputeCreated(disputeId, respondentUserId, plaintif
         priority: 'high',
         metadata: { action: 'dispute_created' }
     });
+
+    // Send SMS if user has phone number
+    if (User && smsService.isSmsConfigured()) {
+        try {
+            const user = await User.findByPk(respondentUserId);
+            if (user?.phone) {
+                await smsService.sendDisputeCreatedSMS(user.phone, disputeId, plaintiffName, disputeTitle || 'Dispute');
+            }
+        } catch (error) {
+            logError('Failed to send dispute created SMS', { error: error.message, disputeId });
+        }
+    }
+
+    return notification;
 }
 
 /**
  * Notify about dispute acceptance
  */
 export async function notifyDisputeAccepted(disputeId, plaintiffUserId, respondentName) {
-    return createNotification({
+    const notification = await createNotification({
         userId: plaintiffUserId,
         type: 'dispute',
         title: 'Dispute Accepted',
@@ -178,6 +197,20 @@ export async function notifyDisputeAccepted(disputeId, plaintiffUserId, responde
         priority: 'high',
         metadata: { action: 'dispute_accepted' }
     });
+
+    // Send SMS
+    if (User && smsService.isSmsConfigured()) {
+        try {
+            const user = await User.findByPk(plaintiffUserId);
+            if (user?.phone) {
+                await smsService.sendDisputeAcceptedSMS(user.phone, disputeId, respondentName);
+            }
+        } catch (error) {
+            logError('Failed to send dispute accepted SMS', { error: error.message });
+        }
+    }
+
+    return notification;
 }
 
 /**
@@ -199,7 +232,7 @@ export async function notifyNewMessage(disputeId, recipientUserId, senderName, p
  * Notify about AI analysis completion
  */
 export async function notifyAIAnalysisComplete(disputeId, userIds, solutionCount) {
-    return createBulkNotifications(userIds, {
+    const notifications = await createBulkNotifications(userIds, {
         type: 'ai',
         title: 'AI Analysis Complete',
         message: `AI has analyzed your case and proposed ${solutionCount} solutions. Please review and vote.`,
@@ -207,6 +240,22 @@ export async function notifyAIAnalysisComplete(disputeId, userIds, solutionCount
         priority: 'high',
         metadata: { action: 'ai_analysis_complete', solutionCount }
     });
+
+    // Send SMS to all users
+    if (User && smsService.isSmsConfigured()) {
+        for (const userId of userIds) {
+            try {
+                const user = await User.findByPk(userId);
+                if (user?.phone) {
+                    await smsService.sendAIAnalysisCompleteSMS(user.phone, disputeId, solutionCount);
+                }
+            } catch (error) {
+                logError('Failed to send AI analysis SMS', { error: error.message, userId });
+            }
+        }
+    }
+
+    return notifications;
 }
 
 /**
@@ -228,7 +277,7 @@ export async function notifyEvidenceUploaded(disputeId, recipientUserId, uploade
  * Notify about signature submission
  */
 export async function notifySignatureSubmitted(disputeId, recipientUserId, signerName) {
-    return createNotification({
+    const notification = await createNotification({
         userId: recipientUserId,
         type: 'resolution',
         title: 'Signature Submitted',
@@ -237,13 +286,27 @@ export async function notifySignatureSubmitted(disputeId, recipientUserId, signe
         priority: 'high',
         metadata: { action: 'signature_submitted' }
     });
+
+    // Send SMS
+    if (User && smsService.isSmsConfigured()) {
+        try {
+            const user = await User.findByPk(recipientUserId);
+            if (user?.phone) {
+                await smsService.sendSignatureRequiredSMS(user.phone, disputeId, signerName);
+            }
+        } catch (error) {
+            logError('Failed to send signature required SMS', { error: error.message });
+        }
+    }
+
+    return notification;
 }
 
 /**
  * Notify about admin resolution approval
  */
 export async function notifyResolutionApproved(disputeId, userIds) {
-    return createBulkNotifications(userIds, {
+    const notifications = await createBulkNotifications(userIds, {
         type: 'resolution',
         title: 'Resolution Approved',
         message: 'Admin has approved the settlement agreement. Your case is now resolved.',
@@ -251,13 +314,29 @@ export async function notifyResolutionApproved(disputeId, userIds) {
         priority: 'urgent',
         metadata: { action: 'resolution_approved' }
     });
+
+    // Send SMS to all users
+    if (User && smsService.isSmsConfigured()) {
+        for (const userId of userIds) {
+            try {
+                const user = await User.findByPk(userId);
+                if (user?.phone) {
+                    await smsService.sendResolutionApprovedSMS(user.phone, disputeId);
+                }
+            } catch (error) {
+                logError('Failed to send resolution approved SMS', { error: error.message, userId });
+            }
+        }
+    }
+
+    return notifications;
 }
 
 /**
  * Notify about court forwarding
  */
-export async function notifyCourtForwarding(disputeId, userIds, courtName) {
-    return createBulkNotifications(userIds, {
+export async function notifyCourtForwarding(disputeId, userIds, courtName, courtType) {
+    const notifications = await createBulkNotifications(userIds, {
         type: 'admin',
         title: 'Case Forwarded to Court',
         message: `Your case has been forwarded to ${courtName}. You will receive further instructions from the court.`,
@@ -265,6 +344,22 @@ export async function notifyCourtForwarding(disputeId, userIds, courtName) {
         priority: 'urgent',
         metadata: { action: 'court_forwarded', courtName }
     });
+
+    // Send SMS to all users
+    if (User && smsService.isSmsConfigured()) {
+        for (const userId of userIds) {
+            try {
+                const user = await User.findByPk(userId);
+                if (user?.phone) {
+                    await smsService.sendCourtForwardingSMS(user.phone, disputeId, courtName, courtType || 'District');
+                }
+            } catch (error) {
+                logError('Failed to send court forwarding SMS', { error: error.message, userId });
+            }
+        }
+    }
+
+    return notifications;
 }
 
 export default {

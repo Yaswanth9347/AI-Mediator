@@ -20,12 +20,12 @@ export default function ProfilePictureUpload({ currentPicture, onUpdate }) {
             e.target.value = ''; // Clear input
             return;
         }
-        
+
         // Validate file extension (additional security)
         const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
         const fileName = file.name.toLowerCase();
         const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
-        
+
         if (!hasValidExtension) {
             toast.error('Invalid file extension. Only .jpg, .jpeg, .png, or .webp files are allowed.');
             e.target.value = ''; // Clear input
@@ -52,7 +52,7 @@ export default function ProfilePictureUpload({ currentPicture, onUpdate }) {
             setUploading(true);
             const formData = new FormData();
             formData.append('profilePicture', file);
-            
+
             const response = await uploadProfilePicture(formData);
             toast.success('Profile picture updated successfully!');
             onUpdate && onUpdate(response.data.profilePicture);
@@ -88,7 +88,8 @@ export default function ProfilePictureUpload({ currentPicture, onUpdate }) {
         if (!path) return null;
         if (path.startsWith('http')) return path;
         if (path.startsWith('data:')) return path;
-        return `http://localhost:5000${path}`;
+        // Handle paths with or without leading slash
+        return `http://localhost:5000${path.startsWith('/') ? '' : '/'}${path}`;
     };
 
     return (
