@@ -39,6 +39,23 @@ function AdminRoute({ children }) {
   return children;
 }
 
+// Route guard to prevent admins from filing disputes
+function UserOnlyRoute({ children }) {
+  const token = localStorage.getItem('token');
+  const role = localStorage.getItem('role');
+
+  if (!token) {
+    return <Navigate to="/login" />;
+  }
+
+  // Admins cannot file disputes, redirect them to dashboard
+  if (role === 'Admin') {
+    return <Navigate to="/dashboard" />;
+  }
+
+  return children;
+}
+
 function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -76,9 +93,11 @@ function Navbar() {
               <Link to="/dashboard" className={getLinkClass('/dashboard')}>
                 <LayoutDashboard className="w-4 h-4" /> Dashboard
               </Link>
-              <Link to="/new" className={getLinkClass('/new')}>
-                <FilePlus className="w-4 h-4" /> New Dispute
-              </Link>
+              {!isAdmin && (
+                <Link to="/new" className={getLinkClass('/new')}>
+                  <FilePlus className="w-4 h-4" /> New Dispute
+                </Link>
+              )}
               {isAdmin && (
                 <Link to="/admin" className={getLinkClass('/admin')}>
                   <BarChart3 className="w-4 h-4" /> Admin Panel
@@ -156,9 +175,9 @@ function AppContent() {
             </ProtectedRoute>
           } />
           <Route path="/new" element={
-            <ProtectedRoute>
+            <UserOnlyRoute>
               <NewDispute />
-            </ProtectedRoute>
+            </UserOnlyRoute>
           } />
           <Route path="/disputes/:id" element={
             <ProtectedRoute>

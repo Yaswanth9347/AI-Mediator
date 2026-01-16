@@ -168,15 +168,17 @@ export default function Dashboard() {
                             {loading ? 'Loading...' : `${totalItems} total case${totalItems !== 1 ? 's' : ''}`}
                         </p>
                     </div>
-                    <div className="flex items-center gap-3">
-                        <Link
-                            to="/new"
-                            className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all shadow-md flex items-center gap-2 text-sm"
-                        >
-                            <Plus className="w-4 h-4" />
-                            File New Case
-                        </Link>
-                    </div>
+                    {userRole !== 'Admin' && (
+                        <div className="flex items-center gap-3">
+                            <Link
+                                to="/new"
+                                className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all shadow-md flex items-center gap-2 text-sm"
+                            >
+                                <Plus className="w-4 h-4" />
+                                File New Case
+                            </Link>
+                        </div>
+                    )}
                 </div>
 
                 {/* Search & Filter Bar */}
@@ -348,7 +350,7 @@ export default function Dashboard() {
                                 ? 'No disputes match your search criteria'
                                 : 'No disputes found'}
                         </p>
-                        {!debouncedSearch && statusFilter === 'All' && (
+                        {!debouncedSearch && statusFilter === 'All' && userRole !== 'Admin' && (
                             <Link
                                 to="/new"
                                 className="inline-flex items-center text-blue-400 hover:text-blue-300 font-medium text-sm"

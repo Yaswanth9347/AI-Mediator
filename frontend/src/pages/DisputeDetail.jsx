@@ -1,13 +1,45 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl } from '../api';
-import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown, File } from 'lucide-react';
+import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl, getUserProfile } from '../api';
+import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown, File, Image, FileAudio, Video, Eye, Mic, MicOff } from 'lucide-react';
 import SignatureCanvas from 'react-signature-canvas';
 import toast from 'react-hot-toast';
 import { useSocket } from '../context/SocketContext';
 import CaseHistory from '../components/CaseHistory';
 import EvidenceSection from '../components/EvidenceSection';
+
+// Helper function to get file type from path
+const getFileType = (filePath) => {
+    if (!filePath) return 'unknown';
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
+    const docExts = ['pdf', 'doc', 'docx'];
+    const videoExts = ['mp4', 'mpeg', 'mov', 'webm'];
+    const audioExts = ['mp3', 'wav', 'ogg'];
+    
+    if (imageExts.includes(ext)) return 'image';
+    if (docExts.includes(ext)) return 'document';
+    if (videoExts.includes(ext)) return 'video';
+    if (audioExts.includes(ext)) return 'audio';
+    return 'file';
+};
+
+// Helper function to get file name from path
+const getFileName = (filePath) => {
+    if (!filePath) return 'Unknown file';
+    const parts = filePath.split('/');
+    return parts[parts.length - 1];
+};
+
+// Helper function to build file URL
+const getFileUrl = (filePath) => {
+    if (!filePath) return '';
+    if (filePath.startsWith('http')) return filePath;
+    // Handle different path formats
+    const cleanPath = filePath.replace(/^\.?\/?(uploads\/)?/, '');
+    return `http://localhost:5000/uploads/${cleanPath}`;
+};
 
 export default function DisputeDetail() {
     const { id } = useParams();
@@ -20,6 +52,14 @@ export default function DisputeDetail() {
     const [aiSolutions, setAiSolutions] = useState([]);
     const [loading, setLoading] = useState(true);
     const messagesEndRef = useRef(null);
+    
+    // Attachment preview modal
+    const [previewAttachment, setPreviewAttachment] = useState(null);
+
+    // Speech-to-text state
+    const [isListening, setIsListening] = useState(false);
+    const recognitionRef = useRef(null);
+    const finalTranscriptRef = useRef(''); // Track final transcript separately to avoid duplication
 
     // Pagination for messages
     const [messagePage, setMessagePage] = useState(1);
@@ -33,6 +73,7 @@ export default function DisputeDetail() {
 
     const currentUserEmail = localStorage.getItem('userEmail');
     const currentUsername = localStorage.getItem('username');
+    const [currentUserIdResolved, setCurrentUserIdResolved] = useState(localStorage.getItem('userId')); // resolved from profile for reliable alignment
     const role = localStorage.getItem('role');
     const isAdmin = role === 'Admin';
     const isPlaintiff = dispute?.plaintiffEmail === currentUserEmail;
@@ -98,6 +139,28 @@ export default function DisputeDetail() {
     useEffect(() => {
         fetchData();
     }, [id]);
+
+    // Resolve current user id reliably via profile to ensure alignment works across refresh/navigation
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            try {
+                const profile = await getUserProfile();
+                const idStr = String(profile.data?.id ?? '');
+                if (mounted && idStr) {
+                    setCurrentUserIdResolved(idStr);
+                    // Keep localStorage in sync for other parts of the app
+                    if (localStorage.getItem('userId') !== idStr) {
+                        localStorage.setItem('userId', idStr);
+                    }
+                }
+            } catch (e) {
+                // If profile fetch fails, we fallback to localStorage
+                // Do not toast here to avoid noise in discussion page
+            }
+        })();
+        return () => { mounted = false; };
+    }, []);
 
     // Join dispute room for real-time updates with sync callback
     useEffect(() => {
@@ -300,47 +363,37 @@ export default function DisputeDetail() {
         if (!newMessage.trim() && !attachment) return;
 
         const messageContent = newMessage.trim();
-        const userId = parseInt(localStorage.getItem('userId'));
-
-        // Optimistic UI: Add message immediately with pending state
-        const optimisticMessage = {
-            id: `pending-${Date.now()}`,
-            content: messageContent,
-            senderId: userId,
-            senderName: currentUsername,
-            senderRole: isPlaintiff ? 'plaintiff' : 'defendant',
-            createdAt: new Date().toISOString(),
-            pending: true,
-            attachmentPath: attachment ? attachment.name : null,
-        };
-
-        setMessages(prev => [...prev, optimisticMessage]);
         setNewMessage('');
+        finalTranscriptRef.current = ''; // Reset speech recognition transcript
 
         const formData = new FormData();
         formData.append('content', messageContent);
         if (attachment) formData.append('attachment', attachment);
 
         try {
+            // Do not mutate messages here; rely on server socket to emit persisted message
             await sendMessage(id, formData);
             setAttachment(null);
             // Stop typing when message is sent
             if (socket && connected) {
                 stopTyping(id);
             }
-            // Message will be confirmed/replaced via socket event
+            // Message will arrive via 'message:new' socket event as a single persisted entry
         } catch (err) {
-            // Remove optimistic message on error
-            setMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
             toast.error(err.response?.data?.error || 'Failed to send message');
         }
     };
 
     // Handle typing indicator
     const handleMessageChange = (e) => {
-        setNewMessage(e.target.value);
+        const value = e.target.value;
+        setNewMessage(value);
+        
+        // Sync the final transcript ref when user manually types/edits
+        // This ensures speech recognition appends to the correct text
+        finalTranscriptRef.current = value;
 
-        if (socket && connected && e.target.value.trim()) {
+        if (socket && connected && value.trim()) {
             // Start typing
             startTyping(id);
 
@@ -357,6 +410,136 @@ export default function DisputeDetail() {
             stopTyping(id);
         }
     };
+
+    // Speech Recognition Functions
+    const initSpeechRecognition = () => {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            toast.error('Speech recognition is not supported in your browser. Please use Chrome or Edge.');
+            return null;
+        }
+        
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        // Empty string enables automatic language detection
+        // Browser will detect the spoken language automatically
+        recognition.lang = '';
+        
+        return recognition;
+    };
+
+    const startListening = () => {
+        const recognition = initSpeechRecognition();
+        if (!recognition) return;
+        
+        recognitionRef.current = recognition;
+        
+        // Initialize final transcript with current message content
+        finalTranscriptRef.current = newMessage;
+        
+        recognition.onstart = () => {
+            setIsListening(true);
+        };
+        
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            
+            // Process results from the current result index onwards
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    // Append final result to our tracked final transcript
+                    const separator = finalTranscriptRef.current && !finalTranscriptRef.current.endsWith(' ') ? ' ' : '';
+                    finalTranscriptRef.current += separator + transcript;
+                } else {
+                    // Accumulate interim results
+                    interimTranscript += transcript;
+                }
+            }
+            
+            // Construct the display text: final transcript + current interim
+            const displayText = finalTranscriptRef.current + 
+                (interimTranscript ? (finalTranscriptRef.current && !finalTranscriptRef.current.endsWith(' ') ? ' ' : '') + interimTranscript : '');
+            
+            setNewMessage(displayText);
+        };
+        
+        recognition.onerror = (event) => {
+            // Only log significant errors
+            if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                console.error('Speech recognition error:', event.error);
+            }
+            
+            // Handle different error types gracefully
+            switch (event.error) {
+                case 'no-speech':
+                    // Silent - user simply didn't speak, they can try again
+                    break;
+                case 'aborted':
+                    // Silent - user manually stopped
+                    break;
+                case 'audio-capture':
+                    toast.error('No microphone found. Please check your device.');
+                    break;
+                case 'not-allowed':
+                    toast.error('Microphone access denied. Please allow microphone access in your browser settings.');
+                    break;
+                case 'network':
+                    toast.error('Network error. Please check your internet connection.');
+                    break;
+                default:
+                    // Don't show error for minor issues
+                    break;
+            }
+            
+            setIsListening(false);
+        };
+        
+        recognition.onend = () => {
+            setIsListening(false);
+            // Sync the final transcript ref with the current message state
+            // This ensures consistency when user edits text manually
+            finalTranscriptRef.current = newMessage;
+        };
+        
+        try {
+            recognition.start();
+        } catch (error) {
+            console.error('Failed to start speech recognition:', error);
+            toast.error('Failed to start speech recognition. Please try again.');
+            setIsListening(false);
+        }
+    };
+
+    const stopListening = () => {
+        if (recognitionRef.current) {
+            recognitionRef.current.stop();
+            recognitionRef.current = null;
+        }
+        setIsListening(false);
+    };
+
+    const toggleListening = () => {
+        if (isListening) {
+            stopListening();
+        } else {
+            // Sync final transcript ref with current message before starting
+            finalTranscriptRef.current = newMessage;
+            startListening();
+        }
+    };
+
+    // Cleanup speech recognition on unmount or navigation
+    useEffect(() => {
+        return () => {
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
+                recognitionRef.current = null;
+            }
+        };
+    }, []);
 
     const handleAcceptCase = async () => {
         try {
@@ -405,6 +588,11 @@ export default function DisputeDetail() {
     // PDF Download Handlers
     const handleDownloadCaseSummary = async () => {
         try {
+            const isClosed = dispute?.status === 'Resolved' || dispute?.forwardedToCourt;
+            if (!isClosed) {
+                toast.error('Case summary is available only after the case is closed.');
+                return;
+            }
             toast.loading('Generating case summary report...', { id: 'pdf-summary' });
             const response = await downloadCaseSummaryReport(id);
             const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -425,6 +613,11 @@ export default function DisputeDetail() {
 
     const handleDownloadAgreement = async () => {
         try {
+            const ready = dispute?.status === 'Resolved' && dispute?.resolutionStatus === 'Finalized' && dispute?.agreementDocPath;
+            if (!ready) {
+                toast.error('Agreement is available only after admin finalization.');
+                return;
+            }
             toast.loading('Downloading settlement agreement...', { id: 'pdf-agreement' });
             const response = await downloadAgreementPDF(id);
             const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -446,6 +639,11 @@ export default function DisputeDetail() {
 
     const handleViewAgreement = async () => {
         try {
+            const ready = dispute?.status === 'Resolved' && dispute?.resolutionStatus === 'Finalized' && dispute?.agreementDocPath;
+            if (!ready) {
+                toast.error('Agreement preview is available only after admin finalization.');
+                return;
+            }
             const res = await getAgreementPreviewUrl(id);
             // API may return full URL or an object with data.url
             const url = res?.data?.url || res;
@@ -470,7 +668,8 @@ export default function DisputeDetail() {
     }
 
     const myChoice = isPlaintiff ? dispute.plaintiffChoice : isDefendant ? dispute.defendantChoice : null;
-    const canParticipate = isPlaintiff || (isDefendant && dispute.respondentAccepted) || isAdmin;
+    // Admins can view but cannot participate in case discussions
+    const canParticipate = isPlaintiff || (isDefendant && dispute.respondentAccepted);
 
     return (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -495,14 +694,16 @@ export default function DisputeDetail() {
                         {/* PDF Reports Dropdown */}
                         <div className="relative">
                             <div className="flex flex-col sm:flex-row gap-2">
-                                <button
-                                    onClick={handleDownloadCaseSummary}
-                                    className="inline-flex items-center px-4 py-2 bg-blue-600/20 text-blue-200 rounded hover:bg-blue-600/30 font-medium transition-colors border border-blue-600/30 text-sm"
-                                    title="Download a comprehensive summary of this case"
-                                >
-                                    <File className="w-4 h-4 mr-2" /> Case Summary
-                                </button>
-                                {dispute.agreementDocPath && (
+                                {(dispute.status === 'Resolved' || dispute.forwardedToCourt) && (
+                                    <button
+                                        onClick={handleDownloadCaseSummary}
+                                        className="inline-flex items-center px-4 py-2 bg-blue-600/20 text-blue-200 rounded hover:bg-blue-600/30 font-medium transition-colors border border-blue-600/30 text-sm"
+                                        title="Download a comprehensive summary of this case"
+                                    >
+                                        <File className="w-4 h-4 mr-2" /> Case Summary
+                                    </button>
+                                )}
+                                {(dispute.status === 'Resolved' && dispute.resolutionStatus === 'Finalized' && dispute.agreementDocPath) && (
                                     <button
                                         onClick={handleDownloadAgreement}
                                         className="inline-flex items-center px-4 py-2 bg-green-600/20 text-green-200 rounded hover:bg-green-600/30 font-medium transition-colors border border-green-600/30 text-sm"
@@ -719,6 +920,7 @@ export default function DisputeDetail() {
                         isPlaintiff={isPlaintiff}
                         isDefendant={isDefendant}
                         isAdmin={isAdmin}
+                        messageAttachments={messages}
                     />
                 </div>
             )}
@@ -761,34 +963,152 @@ export default function DisputeDetail() {
                         )}
 
                         {messages.length === 0 ? <p className="text-center text-blue-300 py-10 text-sm">Start the conversation</p> :
-                            messages.map((msg) => (
-                                <div key={msg.id} className={`flex justify-start ${msg.pending ? 'opacity-70' : ''}`}>
-                                    <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${msg.senderRole === 'plaintiff' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : msg.senderRole === 'defendant' ? 'bg-slate-800/70 text-blue-100 border border-blue-800' : 'bg-slate-800/70 text-blue-100 border border-blue-800'}`}>
-                                        <p className="text-xs font-semibold mb-1 text-blue-300">{msg.senderName} ({msg.senderRole})</p>
-                                        <p className="text-xs sm:text-sm break-words">{msg.content}</p>
-                                        {msg.attachmentPath && !msg.pending && (
-                                            <img
-                                                src={msg.attachmentPath.startsWith('http') ? msg.attachmentPath : `http://localhost:5000/uploads/${msg.attachmentPath}`}
-                                                alt=""
-                                                className="mt-2 max-w-full rounded border border-blue-800 cursor-pointer hover:border-blue-500 transition-colors"
-                                                onClick={() => window.open(msg.attachmentPath.startsWith('http') ? msg.attachmentPath : `http://localhost:5000/uploads/${msg.attachmentPath}`, '_blank')}
-                                            />
-                                        )}
-                                        <div className="flex items-center gap-2 mt-1">
-                                            <p className="text-xs text-blue-400">{new Date(msg.createdAt).toLocaleTimeString()}</p>
-                                            {msg.pending && (
-                                                <span className="text-xs text-blue-400 italic flex items-center gap-1">
-                                                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                                    </svg>
-                                                    Sending...
-                                                </span>
-                                            )}
+                            messages.map((msg) => {
+                                // Alignment logic:
+                                // - For plaintiff: own messages on right, defendant on left
+                                // - For defendant: own messages on right, plaintiff on left  
+                                // - For admin: show plaintiff's view (plaintiff on right, defendant on left)
+                                const isOwnMessage = isAdmin 
+                                    ? msg.senderRole === 'plaintiff'  // Admin sees plaintiff's perspective
+                                    : String(msg.senderId) === String(currentUserIdResolved);
+                                // Keep role label display
+                                const isPlaintiffMessage = msg.senderRole === 'plaintiff';
+                                const isDefendantMessage = msg.senderRole === 'defendant';
+                                
+                                return (
+                                    <div 
+                                        key={msg.id} 
+                                        className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} ${msg.pending ? 'opacity-70' : ''}`}
+                                    >
+                                        <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${
+                                            isOwnMessage 
+                                                ? 'bg-blue-900/60 text-blue-50 border border-blue-600 rounded-br-sm' 
+                                                : 'bg-slate-700/70 text-slate-100 border border-slate-500 rounded-bl-sm'
+                                        }`}>
+                                            <p className={`text-xs font-semibold mb-1 ${
+                                                isOwnMessage 
+                                                    ? 'text-blue-200' 
+                                                    : 'text-slate-300'
+                                            }`}>
+                                                {msg.senderName} <span className={`font-normal ${isOwnMessage ? 'text-blue-300' : 'text-slate-400'}`}>({msg.senderRole})</span>
+                                            </p>
+                                            <p className="text-xs sm:text-sm break-words">{msg.content}</p>
+                                            {msg.attachmentPath && !msg.pending && (() => {
+                                                const fileType = getFileType(msg.attachmentPath);
+                                                const fileUrl = getFileUrl(msg.attachmentPath);
+                                                const fileName = getFileName(msg.attachmentPath);
+                                                
+                                                if (fileType === 'image') {
+                                                    return (
+                                                        <div className="mt-2 relative group">
+                                                            <img
+                                                                src={fileUrl}
+                                                                alt="Attachment"
+                                                                className={`max-w-[200px] max-h-[150px] object-cover rounded cursor-pointer transition-all ${
+                                                                    isOwnMessage 
+                                                                        ? 'border border-blue-600 hover:border-blue-400' 
+                                                                        : 'border border-slate-500 hover:border-slate-400'
+                                                                }`}
+                                                                onClick={() => setPreviewAttachment({ type: 'image', url: fileUrl, name: fileName })}
+                                                            />
+                                                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
+                                                                <Eye className="w-6 h-6 text-white" />
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                } else if (fileType === 'document') {
+                                                    const isPdf = fileName.toLowerCase().endsWith('.pdf');
+                                                    return (
+                                                        <div 
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                                                                isOwnMessage 
+                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
+                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                            }`}
+                                                            onClick={() => setPreviewAttachment({ type: 'document', url: fileUrl, name: fileName, isPdf })}
+                                                        >
+                                                            <FileText className={`w-8 h-8 ${isPdf ? 'text-red-400' : 'text-blue-400'}`} />
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-xs font-medium truncate">{fileName}</p>
+                                                                <p className="text-xs opacity-70">{isPdf ? 'PDF Document' : 'Document'}</p>
+                                                            </div>
+                                                            <Eye className="w-4 h-4 opacity-60" />
+                                                        </div>
+                                                    );
+                                                } else if (fileType === 'video') {
+                                                    return (
+                                                        <div 
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                                                                isOwnMessage 
+                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
+                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                            }`}
+                                                            onClick={() => setPreviewAttachment({ type: 'video', url: fileUrl, name: fileName })}
+                                                        >
+                                                            <Video className="w-8 h-8 text-purple-400" />
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-xs font-medium truncate">{fileName}</p>
+                                                                <p className="text-xs opacity-70">Video</p>
+                                                            </div>
+                                                            <Eye className="w-4 h-4 opacity-60" />
+                                                        </div>
+                                                    );
+                                                } else if (fileType === 'audio') {
+                                                    return (
+                                                        <div 
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                                                                isOwnMessage 
+                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
+                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                            }`}
+                                                            onClick={() => setPreviewAttachment({ type: 'audio', url: fileUrl, name: fileName })}
+                                                        >
+                                                            <FileAudio className="w-8 h-8 text-green-400" />
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-xs font-medium truncate">{fileName}</p>
+                                                                <p className="text-xs opacity-70">Audio</p>
+                                                            </div>
+                                                            <Eye className="w-4 h-4 opacity-60" />
+                                                        </div>
+                                                    );
+                                                } else {
+                                                    return (
+                                                        <div 
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+                                                                isOwnMessage 
+                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
+                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                            }`}
+                                                            onClick={() => window.open(fileUrl, '_blank')}
+                                                        >
+                                                            <File className="w-8 h-8 text-gray-400" />
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-xs font-medium truncate">{fileName}</p>
+                                                                <p className="text-xs opacity-70">File</p>
+                                                            </div>
+                                                            <Download className="w-4 h-4 opacity-60" />
+                                                        </div>
+                                                    );
+                                                }
+                                            })()}
+                                            <div className={`flex items-center gap-2 mt-1 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+                                                <p className={`text-xs ${isOwnMessage ? 'text-blue-300' : 'text-slate-400'}`}>
+                                                    {new Date(msg.createdAt).toLocaleTimeString()}
+                                                </p>
+                                                {msg.pending && (
+                                                    <span className="text-xs text-blue-400 italic flex items-center gap-1">
+                                                        <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                                        </svg>
+                                                        Sending...
+                                                    </span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            ))
+                                );
+                            })
                         }
 
                         {/* Typing indicator */}
@@ -806,18 +1126,164 @@ export default function DisputeDetail() {
                     </div>
 
                     {canParticipate && dispute.status !== 'Resolved' && (
-                        <form onSubmit={handleSendMessage} className="p-2 sm:p-4 border-t border-blue-800 bg-slate-900/70 flex items-center gap-1 sm:gap-2 shrink-0">
-                            <label className="cursor-pointer text-blue-400 hover:text-blue-300">
-                                <Paperclip className="w-4 h-4 sm:w-5 sm:h-5" />
-                                <input type="file" className="hidden" accept="image/*" onChange={(e) => setAttachment(e.target.files[0])} />
-                            </label>
-                            <input type="text" value={newMessage} onChange={handleMessageChange} placeholder="Type your message..." className="flex-1 px-4 py-2.5 text-sm border border-blue-800 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/50 text-blue-100 placeholder-blue-500" />
-                            <button type="submit" className="p-1.5 sm:p-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-full hover:from-blue-700 hover:to-indigo-700">
-                                <Send className="w-4 h-4 sm:w-5 sm:h-5" />
-                            </button>
-                        </form>
+                        <div className="border-t border-blue-800 bg-slate-900/70 shrink-0">
+                            {/* Listening Indicator */}
+                            {isListening && (
+                                <div className="px-4 pt-2 flex items-center justify-center">
+                                    <div className="flex items-center gap-2 text-red-400 text-xs">
+                                        <span className="relative flex h-2 w-2">
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                                        </span>
+                                        <span>Listening... (auto-detecting language)</span>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {/* Message Input Row */}
+                            <form onSubmit={handleSendMessage} className="p-2 sm:p-4 flex items-center gap-1 sm:gap-2">
+                                <label className="cursor-pointer text-blue-400 hover:text-blue-300 p-1.5" title="Attach file (images, PDF, documents)">
+                                    <Paperclip className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    <input type="file" className="hidden" accept="image/*,.pdf,.doc,.docx,video/*,audio/*" onChange={(e) => setAttachment(e.target.files[0])} />
+                                </label>
+                                
+                                {/* Microphone Button */}
+                                <button
+                                    type="button"
+                                    onClick={toggleListening}
+                                    className={`p-1.5 rounded-full transition-all ${
+                                        isListening 
+                                            ? 'bg-red-500 text-white animate-pulse hover:bg-red-600' 
+                                            : 'text-blue-400 hover:text-blue-300 hover:bg-blue-900/30'
+                                    }`}
+                                    title={isListening ? 'Stop listening' : 'Speak your message'}
+                                >
+                                    {isListening ? (
+                                        <MicOff className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    ) : (
+                                        <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    )}
+                                </button>
+                                
+                                <input 
+                                    type="text" 
+                                    value={newMessage} 
+                                    onChange={handleMessageChange} 
+                                    placeholder={isListening ? "Speak now..." : "Type or speak your message..."} 
+                                    className={`flex-1 px-4 py-2.5 text-sm border rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/50 text-blue-100 placeholder-blue-500 transition-colors ${
+                                        isListening 
+                                            ? 'border-red-500/50 ring-1 ring-red-500/30' 
+                                            : 'border-blue-800'
+                                    }`}
+                                />
+                                
+                                <button 
+                                    type="submit" 
+                                    disabled={!newMessage.trim() && !attachment}
+                                    className="p-1.5 sm:p-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-full hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                                >
+                                    <Send className="w-4 h-4 sm:w-5 sm:h-5" />
+                                </button>
+                            </form>
+                        </div>
                     )}
                     {attachment && <div className="px-3 sm:px-4 pb-2 text-xs sm:text-sm text-green-400">📎 {attachment.name}</div>}
+                </div>
+            )}
+
+            {/* Attachment Preview Modal */}
+            {previewAttachment && (
+                <div 
+                    className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+                    onClick={() => setPreviewAttachment(null)}
+                >
+                    <div 
+                        className="relative max-w-4xl max-h-[90vh] w-full bg-slate-900 rounded-lg overflow-hidden border border-blue-800"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-3 border-b border-blue-800 bg-slate-800">
+                            <div className="flex items-center gap-2">
+                                {previewAttachment.type === 'image' && <Image className="w-5 h-5 text-blue-400" />}
+                                {previewAttachment.type === 'document' && <FileText className="w-5 h-5 text-red-400" />}
+                                {previewAttachment.type === 'video' && <Video className="w-5 h-5 text-purple-400" />}
+                                {previewAttachment.type === 'audio' && <FileAudio className="w-5 h-5 text-green-400" />}
+                                <span className="text-sm text-blue-100 truncate max-w-[300px]">{previewAttachment.name}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <a
+                                    href={previewAttachment.url}
+                                    download
+                                    className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 rounded transition-colors"
+                                    title="Download"
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <Download className="w-5 h-5" />
+                                </a>
+                                <button
+                                    onClick={() => setPreviewAttachment(null)}
+                                    className="p-2 text-gray-400 hover:text-white hover:bg-slate-700 rounded transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+                        
+                        {/* Content */}
+                        <div className="p-4 flex items-center justify-center overflow-auto max-h-[calc(90vh-60px)]">
+                            {previewAttachment.type === 'image' && (
+                                <img 
+                                    src={previewAttachment.url} 
+                                    alt={previewAttachment.name}
+                                    className="max-w-full max-h-[70vh] object-contain rounded"
+                                />
+                            )}
+                            {previewAttachment.type === 'document' && previewAttachment.isPdf && (
+                                <iframe
+                                    src={previewAttachment.url}
+                                    className="w-full h-[70vh] rounded border border-slate-700"
+                                    title={previewAttachment.name}
+                                />
+                            )}
+                            {previewAttachment.type === 'document' && !previewAttachment.isPdf && (
+                                <div className="text-center p-8">
+                                    <FileText className="w-16 h-16 text-blue-400 mx-auto mb-4" />
+                                    <p className="text-blue-100 mb-4">{previewAttachment.name}</p>
+                                    <p className="text-sm text-gray-400 mb-4">Document preview not available</p>
+                                    <a
+                                        href={previewAttachment.url}
+                                        download
+                                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        Download File
+                                    </a>
+                                </div>
+                            )}
+                            {previewAttachment.type === 'video' && (
+                                <video
+                                    src={previewAttachment.url}
+                                    controls
+                                    className="max-w-full max-h-[70vh] rounded"
+                                >
+                                    Your browser does not support video playback.
+                                </video>
+                            )}
+                            {previewAttachment.type === 'audio' && (
+                                <div className="text-center p-8">
+                                    <FileAudio className="w-16 h-16 text-green-400 mx-auto mb-4" />
+                                    <p className="text-blue-100 mb-4">{previewAttachment.name}</p>
+                                    <audio
+                                        src={previewAttachment.url}
+                                        controls
+                                        className="w-full max-w-md"
+                                    >
+                                        Your browser does not support audio playback.
+                                    </audio>
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
@@ -878,7 +1344,6 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
                                 )}
                                 <button
                                     onClick={async () => {
-                                        if (!confirm('Have you reviewed the PDF? Approve resolution now?')) return;
                                         try {
                                             await api.post(`/admin/approve-resolution/${dispute.id}`);
                                             toast.success('Resolution Finalized!');
@@ -959,66 +1424,75 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
 
             <div className="space-y-8">
                 {/* Step 1: Verification */}
-                <div className={`flex items-start ${verified ? 'opacity-50' : ''}`}>
+                <div className="flex items-start">
                     <div className={`p-2 rounded-full mr-4 ${verified ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
                         {verified ? <CheckCircle className="w-6 h-6" /> : <Users className="w-6 h-6" />}
                     </div>
                     <div className="flex-1">
-                        <h4 className="font-semibold text-lg text-blue-100">Step 1: Confirm Personal Details</h4>
-                        <p className="text-sm text-blue-200 mb-4">Please verify that your details below are correct for the legal agreement.</p>
-
-                        <div className="bg-slate-900/50 p-4 rounded-md border border-blue-800 grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4 max-w-lg">
-                            <span className="text-blue-300">Full Name:</span>
-                            <span className="font-medium text-blue-100">{myDetails.name}</span>
-
-                            <span className="text-blue-300">Email:</span>
-                            <span className="font-medium text-blue-100">{myDetails.email}</span>
-
-                            <span className="text-blue-300">Phone:</span>
-                            <span className="font-medium text-blue-100">{myDetails.phone}</span>
-
-                            <span className="text-blue-300">Occupation:</span>
-                            <span className="font-medium text-blue-100">{myDetails.occupation}</span>
-
-                            <span className="text-blue-300">Address:</span>
-                            <span className="font-medium text-blue-100">{myDetails.address}</span>
-                        </div>
-
+                        <h4 className={`font-semibold text-lg flex items-center gap-2 ${verified ? 'text-green-400' : 'text-blue-100'}`}>
+                            Step 1: Confirm Personal Details
+                            {verified && <CheckCircle className="w-5 h-5 text-green-400" />}
+                        </h4>
+                        
                         {!verified && (
-                            <button onClick={confirmDetails} className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium">
-                                Confirm These Details Are Correct
-                            </button>
+                            <>
+                                <p className="text-sm text-blue-200 mb-4">Please verify that your details below are correct for the legal agreement.</p>
+
+                                <div className="bg-slate-900/50 p-4 rounded-md border border-blue-800 grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4 max-w-lg">
+                                    <span className="text-blue-300">Full Name:</span>
+                                    <span className="font-medium text-blue-100">{myDetails.name}</span>
+
+                                    <span className="text-blue-300">Email:</span>
+                                    <span className="font-medium text-blue-100">{myDetails.email}</span>
+
+                                    <span className="text-blue-300">Phone:</span>
+                                    <span className="font-medium text-blue-100">{myDetails.phone}</span>
+
+                                    <span className="text-blue-300">Occupation:</span>
+                                    <span className="font-medium text-blue-100">{myDetails.occupation}</span>
+
+                                    <span className="text-blue-300">Address:</span>
+                                    <span className="font-medium text-blue-100">{myDetails.address}</span>
+                                </div>
+
+                                <button onClick={confirmDetails} className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium">
+                                    Confirm These Details Are Correct
+                                </button>
+                            </>
                         )}
-                        {verified && <span className="text-green-400 font-medium text-sm">✓ Details Confirmed</span>}
                     </div>
                 </div>
 
                 {/* Step 2: Signature */}
                 {verified && (
-                    <div className={`flex items-start ${signed ? 'opacity-50' : ''}`}>
+                    <div className="flex items-start">
                         <div className={`p-2 rounded-full mr-4 ${signed ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
                             {signed ? <CheckCircle className="w-6 h-6" /> : <PenTool className="w-6 h-6" />}
                         </div>
                         <div className="flex-1">
-                            <h4 className="font-semibold text-lg text-blue-100">Step 2: Digital Signature</h4>
-                            <p className="text-sm text-blue-200 mb-2">Sign the "Promissory Note / Settlement Agreement" digitally.</p>
+                            <h4 className={`font-semibold text-lg flex items-center gap-2 ${signed ? 'text-green-400' : 'text-blue-100'}`}>
+                                Step 2: Digital Signature
+                                {signed && <CheckCircle className="w-5 h-5 text-green-400" />}
+                            </h4>
 
                             {!signed && (
-                                <div className="mt-3 border-2 border-dashed border-blue-800 rounded-lg p-2 inline-block bg-slate-900/30">
-                                    <SignatureCanvas
-                                        penColor="white"
-                                        canvasProps={{ width: 300, height: 150, className: 'sigCanvas' }}
-                                        ref={sigPad}
-                                    />
-                                    <div className="flex justify-between mt-2">
-                                        <button onClick={() => sigPad.current.clear()} className="text-xs text-red-400 hover:text-red-300">Clear</button>
-                                        <button onClick={submitSignature} disabled={loading} className="px-3 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm rounded hover:from-blue-700 hover:to-indigo-700">
-                                            {loading ? 'Submitting...' : 'Sign & Submit'}
-                                        </button>
+                                <>
+                                    <p className="text-sm text-blue-200 mb-2">Sign the "Promissory Note / Settlement Agreement" digitally.</p>
+                                    <div className="mt-3 border-2 border-dashed border-blue-800 rounded-lg p-2 inline-block bg-slate-900/30">
+                                        <SignatureCanvas
+                                            penColor="white"
+                                            canvasProps={{ width: 300, height: 150, className: 'sigCanvas' }}
+                                            ref={sigPad}
+                                        />
+                                        <div className="flex justify-between mt-2">
+                                            <button onClick={() => sigPad.current.clear()} className="text-xs text-red-400 hover:text-red-300">Clear</button>
+                                            <button onClick={submitSignature} disabled={loading} className="px-3 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm rounded hover:from-blue-700 hover:to-indigo-700">
+                                                {loading ? 'Submitting...' : 'Sign & Submit'}
+                                            </button>
+                                        </div>
                                     </div>
-                                </div>
+                                </>
                             )}
-                            {signed && <span className="text-green-400 font-medium text-sm">✓ Signed</span>}
                         </div>
                     </div>
                 )}

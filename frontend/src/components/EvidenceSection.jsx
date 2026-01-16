@@ -27,11 +27,43 @@ import {
     Copy,
     RefreshCw,
     ChevronDown,
-    ChevronUp
+    ChevronUp,
+    MessageSquare
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, isAdmin }) {
+// Helper function to get file type from path
+const getFileTypeFromPath = (filePath) => {
+    if (!filePath) return 'file';
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
+    const docExts = ['pdf', 'doc', 'docx'];
+    const videoExts = ['mp4', 'mpeg', 'mov', 'webm'];
+    const audioExts = ['mp3', 'wav', 'ogg'];
+    
+    if (imageExts.includes(ext)) return 'image';
+    if (docExts.includes(ext)) return 'document';
+    if (videoExts.includes(ext)) return 'video';
+    if (audioExts.includes(ext)) return 'audio';
+    return 'file';
+};
+
+// Helper function to get file name from path
+const getFileNameFromPath = (filePath) => {
+    if (!filePath) return 'Unknown file';
+    const parts = filePath.split('/');
+    return parts[parts.length - 1];
+};
+
+// Helper function to build file URL
+const getFileUrlFromPath = (filePath) => {
+    if (!filePath) return '';
+    if (filePath.startsWith('http')) return filePath;
+    const cleanPath = filePath.replace(/^\.?\/?(uploads\/)?/, '');
+    return `http://localhost:5000/uploads/${cleanPath}`;
+};
+
+export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, isAdmin, messageAttachments = [] }) {
     const [evidence, setEvidence] = useState([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -50,8 +82,11 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
     const [ocrLoading, setOcrLoading] = useState({}); // { evidenceId: boolean }
     const [expandedOcr, setExpandedOcr] = useState({}); // { evidenceId: boolean }
     const [processingAllOcr, setProcessingAllOcr] = useState(false);
+    const [activeTab, setActiveTab] = useState('evidence'); // 'evidence' or 'attachments'
+    const [viewingMessageAttachment, setViewingMessageAttachment] = useState(null);
 
-    const canUpload = isPlaintiff || isDefendant || isAdmin;
+    // Only plaintiff and defendant can upload evidence; admin can only view
+    const canUpload = isPlaintiff || isDefendant;
 
     // OCR supported MIME types
     const ocrSupportedTypes = [
@@ -410,50 +445,97 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
         return isAdmin || evidenceItem.uploadedBy === parseInt(localStorage.getItem('userId'));
     };
 
+    // Filter message attachments that have attachmentPath
+    const filteredMessageAttachments = messageAttachments.filter(msg => msg.attachmentPath);
+
     return (
         <div className="bg-slate-800/50 rounded-lg border border-blue-800 p-6">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
                     <Paperclip className="w-6 h-6 text-blue-400" />
                     <h3 className="text-xl font-bold text-blue-100">Evidence & Attachments</h3>
-                    {evidence.length > 0 && (
-                        <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 text-sm rounded-full border border-blue-500/30">
-                            {evidence.length} file{evidence.length !== 1 ? 's' : ''}
-                        </span>
-                    )}
                 </div>
             </div>
 
-            {/* Upload Section */}
-            {canUpload && (
-                <div className="mb-6 p-4 bg-slate-900/50 rounded-lg border border-blue-800/50">
-                    <h4 className="text-sm font-semibold text-blue-200 mb-3">Upload Evidence</h4>
-                    
-                    {/* Drag & Drop Area */}
-                    <div
-                        className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                            dragActive 
-                                ? 'border-blue-500 bg-blue-500/10' 
-                                : 'border-blue-800 bg-slate-800/30 hover:border-blue-700'
-                        }`}
-                        onDragEnter={handleDrag}
-                        onDragLeave={handleDrag}
-                        onDragOver={handleDrag}
-                        onDrop={handleDrop}
-                    >
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            onChange={handleFileSelect}
-                            accept="image/*,video/*,audio/*,.pdf,.doc,.docx"
-                            className="hidden"
-                            id="evidence-upload"
-                        />
-                        
-                        {selectedFile ? (
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-center gap-2 text-green-400">
-                                    <CheckCircle className="w-5 h-5" />
+            {/* Tabs */}
+            <div className="flex gap-2 mb-6 border-b border-blue-800">
+                <button
+                    onClick={() => setActiveTab('evidence')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'evidence'
+                            ? 'text-blue-100'
+                            : 'text-blue-400 hover:text-blue-300'
+                    }`}
+                >
+                    <span className="flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        Evidence Files
+                        {evidence.length > 0 && (
+                            <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-300 text-xs rounded-full">
+                                {evidence.length}
+                            </span>
+                        )}
+                    </span>
+                    {activeTab === 'evidence' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />
+                    )}
+                </button>
+                <button
+                    onClick={() => setActiveTab('attachments')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                        activeTab === 'attachments'
+                            ? 'text-blue-100'
+                            : 'text-blue-400 hover:text-blue-300'
+                    }`}
+                >
+                    <span className="flex items-center gap-2">
+                        <MessageSquare className="w-4 h-4" />
+                        Message Attachments
+                        {filteredMessageAttachments.length > 0 && (
+                            <span className="px-1.5 py-0.5 bg-green-500/20 text-green-300 text-xs rounded-full">
+                                {filteredMessageAttachments.length}
+                            </span>
+                        )}
+                    </span>
+                    {activeTab === 'attachments' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />
+                    )}
+                </button>
+            </div>
+
+            {/* Evidence Tab Content */}
+            {activeTab === 'evidence' && (
+                <>
+                    {/* Upload Section */}
+                    {canUpload && (
+                        <div className="mb-6 p-4 bg-slate-900/50 rounded-lg border border-blue-800/50">
+                            <h4 className="text-sm font-semibold text-blue-200 mb-3">Upload Evidence</h4>
+                            
+                            {/* Drag & Drop Area */}
+                            <div
+                                className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                                    dragActive 
+                                        ? 'border-blue-500 bg-blue-500/10' 
+                                        : 'border-blue-800 bg-slate-800/30 hover:border-blue-700'
+                                }`}
+                                onDragEnter={handleDrag}
+                                onDragLeave={handleDrag}
+                                onDragOver={handleDrag}
+                                onDrop={handleDrop}
+                            >
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    onChange={handleFileSelect}
+                                    accept="image/*,video/*,audio/*,.pdf,.doc,.docx"
+                                    className="hidden"
+                                    id="evidence-upload"
+                                />
+                                
+                                {selectedFile ? (
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-center gap-2 text-green-400">
+                                            <CheckCircle className="w-5 h-5" />
                                     <span className="font-medium">{selectedFile.name}</span>
                                 </div>
                                 <p className="text-xs text-blue-300">{formatFileSize(selectedFile.size)}</p>
@@ -716,6 +798,188 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                             )}
                         </div>
                     ))}
+                </div>
+            )}
+            </>
+            )}
+
+            {/* Message Attachments Tab Content */}
+            {activeTab === 'attachments' && (
+                <div className="space-y-4">
+                    {filteredMessageAttachments.length === 0 ? (
+                        <div className="text-center py-12 text-blue-400">
+                            <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                            <p className="text-sm">No attachments shared in the discussion yet</p>
+                            <p className="text-xs text-blue-500 mt-1">Files shared in the case discussion will appear here</p>
+                        </div>
+                    ) : (
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                            {filteredMessageAttachments.map((msg) => {
+                                const fileType = getFileTypeFromPath(msg.attachmentPath);
+                                const fileName = getFileNameFromPath(msg.attachmentPath);
+                                const fileUrl = getFileUrlFromPath(msg.attachmentPath);
+                                
+                                return (
+                                    <div
+                                        key={msg.id}
+                                        className="bg-slate-900/50 rounded-lg border border-blue-800/50 overflow-hidden hover:border-blue-600 transition-colors"
+                                    >
+                                        {/* Thumbnail/Preview */}
+                                        {fileType === 'image' ? (
+                                            <div 
+                                                className="relative h-32 bg-slate-800 cursor-pointer group"
+                                                onClick={() => setViewingMessageAttachment({ type: 'image', url: fileUrl, name: fileName, sender: msg.senderName, role: msg.senderRole, time: msg.createdAt })}
+                                            >
+                                                <img
+                                                    src={fileUrl}
+                                                    alt={fileName}
+                                                    className="w-full h-full object-cover"
+                                                />
+                                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                    <Eye className="w-8 h-8 text-white" />
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div 
+                                                className="h-32 bg-slate-800 flex items-center justify-center cursor-pointer group hover:bg-slate-700/50 transition-colors"
+                                                onClick={() => setViewingMessageAttachment({ type: fileType, url: fileUrl, name: fileName, sender: msg.senderName, role: msg.senderRole, time: msg.createdAt })}
+                                            >
+                                                {fileType === 'document' && (
+                                                    <FileText className={`w-12 h-12 ${fileName.toLowerCase().endsWith('.pdf') ? 'text-red-400' : 'text-blue-400'}`} />
+                                                )}
+                                                {fileType === 'video' && <Video className="w-12 h-12 text-purple-400" />}
+                                                {fileType === 'audio' && <FileAudio className="w-12 h-12 text-green-400" />}
+                                                {fileType === 'file' && <File className="w-12 h-12 text-gray-400" />}
+                                            </div>
+                                        )}
+                                        
+                                        {/* File Info */}
+                                        <div className="p-3">
+                                            <p className="text-sm text-blue-100 truncate font-medium" title={fileName}>
+                                                {fileName}
+                                            </p>
+                                            <div className="flex items-center justify-between mt-2">
+                                                <div className="flex items-center gap-1.5">
+                                                    <User className="w-3 h-3 text-blue-400" />
+                                                    <span className="text-xs text-blue-300">{msg.senderName}</span>
+                                                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                                        msg.senderRole === 'plaintiff' 
+                                                            ? 'bg-blue-500/20 text-blue-300' 
+                                                            : 'bg-slate-600/50 text-slate-300'
+                                                    }`}>
+                                                        {msg.senderRole}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <p className="text-xs text-blue-500 mt-1">
+                                                {new Date(msg.createdAt).toLocaleDateString()} at {new Date(msg.createdAt).toLocaleTimeString()}
+                                            </p>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Message Attachment Preview Modal */}
+            {viewingMessageAttachment && (
+                <div 
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                    onClick={() => setViewingMessageAttachment(null)}
+                >
+                    <div 
+                        className="relative w-full max-w-4xl max-h-[90vh] m-4 flex flex-col bg-slate-900 rounded-lg border border-blue-800 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-4 bg-slate-800 border-b border-blue-800">
+                            <div className="flex items-center gap-3">
+                                {viewingMessageAttachment.type === 'image' && <Image className="w-5 h-5 text-blue-400" />}
+                                {viewingMessageAttachment.type === 'document' && <FileText className="w-5 h-5 text-red-400" />}
+                                {viewingMessageAttachment.type === 'video' && <Video className="w-5 h-5 text-purple-400" />}
+                                {viewingMessageAttachment.type === 'audio' && <FileAudio className="w-5 h-5 text-green-400" />}
+                                <div>
+                                    <p className="text-sm font-medium text-blue-100 truncate max-w-[300px]">{viewingMessageAttachment.name}</p>
+                                    <p className="text-xs text-blue-400">
+                                        Shared by {viewingMessageAttachment.sender} ({viewingMessageAttachment.role})
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <a
+                                    href={viewingMessageAttachment.url}
+                                    download
+                                    className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 rounded transition-colors"
+                                    title="Download"
+                                >
+                                    <Download className="w-5 h-5" />
+                                </a>
+                                <button
+                                    onClick={() => setViewingMessageAttachment(null)}
+                                    className="p-2 text-gray-400 hover:text-white hover:bg-slate-700 rounded transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+                        
+                        {/* Content */}
+                        <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[400px]">
+                            {viewingMessageAttachment.type === 'image' && (
+                                <img 
+                                    src={viewingMessageAttachment.url} 
+                                    alt={viewingMessageAttachment.name}
+                                    className="max-w-full max-h-[70vh] object-contain rounded"
+                                />
+                            )}
+                            {viewingMessageAttachment.type === 'document' && viewingMessageAttachment.name.toLowerCase().endsWith('.pdf') && (
+                                <iframe
+                                    src={viewingMessageAttachment.url}
+                                    className="w-full h-[70vh] rounded border border-slate-700"
+                                    title={viewingMessageAttachment.name}
+                                />
+                            )}
+                            {viewingMessageAttachment.type === 'document' && !viewingMessageAttachment.name.toLowerCase().endsWith('.pdf') && (
+                                <div className="text-center p-8">
+                                    <FileText className="w-16 h-16 text-blue-400 mx-auto mb-4" />
+                                    <p className="text-blue-100 mb-4">{viewingMessageAttachment.name}</p>
+                                    <p className="text-sm text-gray-400 mb-4">Document preview not available</p>
+                                    <a
+                                        href={viewingMessageAttachment.url}
+                                        download
+                                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        Download File
+                                    </a>
+                                </div>
+                            )}
+                            {viewingMessageAttachment.type === 'video' && (
+                                <video
+                                    src={viewingMessageAttachment.url}
+                                    controls
+                                    className="max-w-full max-h-[70vh] rounded"
+                                >
+                                    Your browser does not support video playback.
+                                </video>
+                            )}
+                            {viewingMessageAttachment.type === 'audio' && (
+                                <div className="text-center p-8">
+                                    <FileAudio className="w-16 h-16 text-green-400 mx-auto mb-4" />
+                                    <p className="text-blue-100 mb-4">{viewingMessageAttachment.name}</p>
+                                    <audio
+                                        src={viewingMessageAttachment.url}
+                                        controls
+                                        className="w-full max-w-md"
+                                    >
+                                        Your browser does not support audio playback.
+                                    </audio>
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </div>
             )}
 

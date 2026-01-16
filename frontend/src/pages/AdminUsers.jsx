@@ -422,7 +422,21 @@ export default function AdminUsers() {
                                         <tr key={user.id} className="border-b border-gray-700/30 hover:bg-gray-700/20 transition-colors">
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center gap-3">
-                                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
+                                                    {user.profilePicture ? (
+                                                        <img
+                                                            src={user.profilePicture.startsWith('http') ? user.profilePicture : `http://localhost:5000${user.profilePicture.startsWith('/') ? '' : '/'}${user.profilePicture}`}
+                                                            alt={user.username}
+                                                            className="w-10 h-10 rounded-full object-cover"
+                                                            onError={(e) => {
+                                                                e.target.style.display = 'none';
+                                                                e.target.nextSibling.style.display = 'flex';
+                                                            }}
+                                                        />
+                                                    ) : null}
+                                                    <div
+                                                        className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold"
+                                                        style={{ display: user.profilePicture ? 'none' : 'flex' }}
+                                                    >
                                                         {user.username?.charAt(0).toUpperCase() || 'U'}
                                                     </div>
                                                     <div>
@@ -538,7 +552,21 @@ export default function AdminUsers() {
                         <div className="p-6 space-y-6">
                             {/* User Info */}
                             <div className="flex items-center gap-4">
-                                <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-2xl font-bold">
+                                {selectedUser.profilePicture ? (
+                                    <img
+                                        src={selectedUser.profilePicture.startsWith('http') ? selectedUser.profilePicture : `http://localhost:5000${selectedUser.profilePicture.startsWith('/') ? '' : '/'}${selectedUser.profilePicture}`}
+                                        alt={selectedUser.username}
+                                        className="w-16 h-16 rounded-xl object-cover"
+                                        onError={(e) => {
+                                            e.target.style.display = 'none';
+                                            e.target.nextSibling.style.display = 'flex';
+                                        }}
+                                    />
+                                ) : null}
+                                <div
+                                    className="w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-2xl font-bold"
+                                    style={{ display: selectedUser.profilePicture ? 'none' : 'flex' }}
+                                >
                                     {selectedUser.username?.charAt(0).toUpperCase() || 'U'}
                                 </div>
                                 <div>

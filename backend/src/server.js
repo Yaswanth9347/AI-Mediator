@@ -1423,78 +1423,133 @@ async function analyzeDisputeWithAI(dispute, messages, isReanalysis = false) {
             `${m.senderRole.toUpperCase()} (${m.senderName}): ${m.content} ${m.attachmentPath ? '[ATTACHMENT INCLUDED]' : ''}`
         ).join('\n');
 
-        const prompt = `You are an impartial and highly analytical dispute-resolution intelligence system.
-Your primary responsibility is to carefully and thoroughly analyze dispute statements provided by both parties and arrive at a balanced, ethical, and fair resolution.
+        const prompt = `SYSTEM ROLE
 
-CORE ANALYSIS REQUIREMENTS:
-- Examine each statement in detail, identifying: Key facts, Claims and counterclaims, Responsibilities of each party, Any misunderstandings, gaps, or conflicting interpretations
-- Maintain strict neutrality at all times
-- Do not favor one party over the other
-- Avoid assumptions not supported by the provided statements
-- Reference Indian Constitutional Law and Indian Penal Code where applicable
+You are the AI Dispute Resolution Engine embedded in an end-to-end legal-tech application.
+You operate only on backend-provided data and only after explicit trigger conditions are met.
 
-FAIRNESS PRINCIPLE:
-- The proposed resolution must be equitable
-- Neither party should suffer an unfair loss
-- Neither party should receive an unreasonable advantage
-- The outcome should encourage compromise, accountability, and mutual closure
-- If fault exists on both sides, distribute responsibility proportionately and clearly explain why
+You are NOT a chatbot, NOT a legal advisor, and NOT a judge.
 
-${isReanalysis ? 'IMPORTANT: The previous solutions were rejected by one or both parties. Provide NEW alternative solutions with different approaches.' : ''}
+Your sole responsibility is to convert completed dispute discussions + evidence into clear, fair, dispute-specific resolution outcomes.
 
-DISPUTE CASE #${dispute.id}
-Title: ${dispute.title}
+EXECUTION CONTEXT
 
-PLAINTIFF INFORMATION:
+You are executing for Dispute Case #${dispute.id}${isReanalysis ? ' (REANALYSIS REQUESTED - Previous solutions rejected. Generate NEW alternatives with different approaches)' : ''}
+Jurisdiction: India
+Dispute Title: ${dispute.title}
+
+PLAINTIFF (Person 1):
 - Name: ${dispute.plaintiffName}
 - Occupation: ${dispute.plaintiffOccupation || 'Not specified'}
 - Initial Complaint: ${dispute.description}
 
-DEFENDANT INFORMATION:
+DEFENDANT (Person 2):
 - Name: ${dispute.respondentName}
 - Occupation: ${dispute.respondentOccupation || 'Not specified'}
 
-CONVERSATION HISTORY:
+FULL DISCUSSION TRANSCRIPT:
 ${conversationHistory}
 
-INSTRUCTIONS:
-1. Analyze the dispute descriptions AND the attached evidence images (if any)
-2. Identify the core issues from BOTH perspectives
-3. Assess the SERIOUSNESS level (LOW/MEDIUM/HIGH)
-4. Provide 3 detailed, actionable resolution options
+INTERNAL ANALYSIS (STRICTLY INTERNAL — DO NOT OUTPUT DIRECTLY)
+
+Before generating any user-visible text, you MUST internally analyze:
+- Every statement from both parties
+- Chronology of events
+- Evidence relevance, strength, and gaps (images/attachments included if present)
+- Alleged harm (reputation, professional, financial, emotional)
+- Power imbalance, if present
+- Consistencies and contradictions
+- Whether corrective justice is required and for whom
+
+Apply principles of the Indian Constitution:
+- Natural justice
+- Fairness
+- Equality before law
+- Proportionality
+
+You may internally conclude that one party requires stronger protection or restoration, but you MUST NOT declare guilt or legal liability.
+
+USER-FACING OUTPUT REQUIREMENTS
+
+HEADER (MUST BE EXACT):
+"TOP 3 CLEAR POSSIBLE SOLUTIONS TO RESOLVE THIS DISPUTE"
+
+MANDATORY OUTPUT RULES:
+
+You MUST output exactly three solutions.
+
+Each solution MUST:
+- Be written in plain, clear language
+- Use the actual party names (${dispute.plaintiffName} and ${dispute.respondentName})
+- Reference facts from THIS dispute
+- Propose concrete real-world actions
+- Explain why the solution is fair
+- End with a Result section explaining outcomes
+
+You MUST NOT:
+- Use "Option 1 / Option 2 / Option 3"
+- Use voting language
+- Use generic mediation advice like "consult a lawyer", "engage a mediator"
+- Produce analysis reports
+- Use reusable templates
+- Give solutions that could apply to any dispute
+
+REQUIRED STRUCTURE FOR EACH SOLUTION:
+
+Solution X: [Descriptive, Case-Specific Title using party names/facts]
+
+[Clearly state what happened based on statements]
+
+[What corrective actions will occur]
+
+[Who must do what]
+
+[What behavior must stop]
+
+[Ensure no unfair punishment and no unfair advantage]
+
+Result:
+[Explain how harm is corrected or contained]
+[How reputation, dignity, or opportunity is restored]
+[Whether the matter is closed or protected from recurrence]
+
+QUALITY BAR (NON-NEGOTIABLE):
+
+Ask yourself before responding:
+1. Could a normal person write this without AI? → If yes, regenerate.
+2. Is this solution specific to THESE names and facts? → If no, regenerate.
+3. Does this solution actually change reality? → If no, regenerate.
+
+FAIL-SAFE:
+If you cannot produce three meaningful, fact-based resolutions, explicitly state why and identify missing inputs. Do NOT fall back to generic advice.
+
+OUTPUT FORMAT (JSON):
 
 Respond in this EXACT JSON format:
 {
-    "summary": "Comprehensive summary covering both parties' perspectives, key disputed facts, and main points of contention",
-    "keyIssues": ["Issue 1", "Issue 2", "Issue 3"],
-    "legalAssessment": "Detailed legal perspective under Indian Constitutional Law/IPC, including relevant sections if applicable",
+    "summary": "TOP 3 CLEAR POSSIBLE SOLUTIONS TO RESOLVE THIS DISPUTE",
+    "legalAssessment": "Brief internal context about fairness principles applied (natural justice, equality, proportionality under Indian Constitution)",
     "seriousness": "LOW|MEDIUM|HIGH",
-    "faultAnalysis": "Proportionate analysis of responsibility on both sides, if applicable",
     "solutions": [
         {
-            "title": "Solution Title",
-            "description": "Detailed step-by-step solution with clear actionable items for both parties",
-            "benefitsPlaintiff": "How this solution addresses the plaintiff's concerns fairly",
-            "benefitsDefendant": "How this solution protects the defendant's interests",
-            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
+            "title": "Descriptive case-specific title using actual names",
+            "description": "Full solution text following the REQUIRED STRUCTURE above. Must be specific to this dispute, use actual names, reference actual facts, propose concrete actions, explain fairness, and end with Result section.",
+            "benefitsPlaintiff": "How this addresses ${dispute.plaintiffName}'s concerns fairly",
+            "benefitsDefendant": "How this protects ${dispute.respondentName}'s interests"
         },
         {
-            "title": "Alternative Solution Title",
-            "description": "Different approach with detailed implementation",
-            "benefitsPlaintiff": "Plaintiff benefits",
-            "benefitsDefendant": "Defendant benefits",
-            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
+            "title": "Second case-specific solution title",
+            "description": "Different approach, equally detailed and specific",
+            "benefitsPlaintiff": "${dispute.plaintiffName}'s benefits",
+            "benefitsDefendant": "${dispute.respondentName}'s benefits"
         },
         {
-            "title": "Compromise Solution Title",
-            "description": "Middle-ground approach",
-            "benefitsPlaintiff": "Plaintiff benefits",
-            "benefitsDefendant": "Defendant benefits",
-            "implementationSteps": ["Step 1", "Step 2", "Step 3"]
+            "title": "Third case-specific solution title",
+            "description": "Third approach with full detail",
+            "benefitsPlaintiff": "${dispute.plaintiffName}'s benefits",
+            "benefitsDefendant": "${dispute.respondentName}'s benefits"
         }
-    ],
-    "preventiveRecommendations": ["Recommendation 1 to prevent similar disputes", "Recommendation 2"],
-    "courtRecommendation": "If seriousness is HIGH, specify which court (District/High/Supreme) and provide reasoning. If LOW or MEDIUM, explain why mediation is sufficient."
+    ]
 }`;
 
         const parts = [prompt, ...evidenceParts];
@@ -3471,6 +3526,7 @@ app.get('/api/admin/sessions/stats', authMiddleware, async (req, res) => {
 // Get user's disputes
 app.get('/api/users/my-disputes', authMiddleware, async (req, res) => {
     try {
+        // Dispute model stores plaintiff/defendant details directly - no need to join with User
         const disputes = await Dispute.findAll({
             where: {
                 [Op.or]: [
@@ -3478,10 +3534,6 @@ app.get('/api/users/my-disputes', authMiddleware, async (req, res) => {
                     { defendantId: req.user.id }
                 ]
             },
-            include: [
-                { model: User, as: 'plaintiff', attributes: ['username', 'email'] },
-                { model: User, as: 'defendant', attributes: ['username', 'email'] }
-            ],
             order: [['createdAt', 'DESC']]
         });
 
@@ -3560,10 +3612,51 @@ app.delete('/api/users/profile-picture', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'No profile picture to delete' });
         }
 
-        // Delete file
-        const filePath = path.join(__dirname, '..', user.profilePicture);
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
+        // Resolve stored path which may be one of:
+        // - 'uploads/filename.jpg'
+        // - '/uploads/filename.jpg'
+        // - './uploads/filename.jpg'
+        // - full URL 'http://host/uploads/filename.jpg'
+        let storedPath = user.profilePicture;
+        try {
+            if (storedPath.startsWith('http')) {
+                const u = new URL(storedPath);
+                storedPath = u.pathname; // '/uploads/filename.jpg'
+            }
+        } catch {}
+        // Normalize to relative path without leading slash or dot
+        let relativePath = storedPath
+            .replace(/^\.+\/?/, '')
+            .replace(/^\//, '')
+            .replace(/^[.]+\//, '')
+            .replace(/\\/g, '/') // windows -> posix
+            .replace(/^uploads\/uploads\//, 'uploads/');
+        // Ensure it points under uploads/
+        if (!relativePath.startsWith('uploads/')) {
+            relativePath = path.posix.join('uploads', path.posix.basename(relativePath));
+        }
+        // Use process.cwd() since ES modules don't have __dirname
+        const baseDir = process.cwd();
+        const candidatePaths = [
+            path.join(baseDir, relativePath),
+            path.join(baseDir, 'uploads', path.basename(relativePath)),
+            path.join(baseDir, 'backend', relativePath),
+            path.join(baseDir, 'backend', 'uploads', path.basename(relativePath))
+        ];
+        let deleted = false;
+        for (const p of candidatePaths) {
+            try {
+                if (fs.existsSync(p)) {
+                    fs.unlinkSync(p);
+                    deleted = true;
+                    break;
+                }
+            } catch (e) {
+                console.warn('Profile picture unlink failed:', p, e.message);
+            }
+        }
+        if (!deleted) {
+            console.warn('Profile picture file not found, clearing DB field only:', relativePath);
         }
 
         user.profilePicture = null;
@@ -5514,12 +5607,16 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
 
         const currentUser = await User.findByPk(req.user.id);
 
-        // Only allow parties or admin to upload evidence
+        // Only allow parties (plaintiff/defendant) to upload evidence; admin can only view
         const isPlaintiff = currentUser.email === dispute.plaintiffEmail;
         const isDefendant = currentUser.email === dispute.respondentEmail;
         const isAdmin = req.user.role === 'Admin';
 
-        if (!isPlaintiff && !isDefendant && !isAdmin) {
+        if (isAdmin) {
+            return res.status(403).json({ error: 'Admins can view evidence but cannot upload' });
+        }
+
+        if (!isPlaintiff && !isDefendant) {
             return res.status(403).json({ error: 'Not authorized to upload evidence for this case' });
         }
 
@@ -5542,8 +5639,8 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
         else if (req.file.mimetype.startsWith('video/')) fileType = 'video';
         else if (req.file.mimetype.startsWith('audio/')) fileType = 'audio';
 
-        // Determine user role
-        const uploaderRole = isAdmin ? 'admin' : (isPlaintiff ? 'plaintiff' : 'defendant');
+        // Determine user role (admin blocked above, so only plaintiff/defendant here)
+        const uploaderRole = isPlaintiff ? 'plaintiff' : 'defendant';
 
         const { description } = req.body;
 
@@ -7114,12 +7211,8 @@ async function generateCaseSummaryPDF(dispute, messages = [], evidence = [], aud
 // Generate and download Case Summary PDF
 app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => {
     try {
-        const dispute = await Dispute.findByPk(req.params.id, {
-            include: [
-                { model: User, as: 'plaintiff', attributes: ['username', 'email'] },
-                { model: User, as: 'defendant', attributes: ['username', 'email'] }
-            ]
-        });
+        // Dispute model stores plaintiff/defendant details directly - no need to join with User
+        const dispute = await Dispute.findByPk(req.params.id);
 
         if (!dispute) {
             return res.status(404).json({ error: 'Dispute not found' });

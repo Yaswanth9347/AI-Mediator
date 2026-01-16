@@ -7,11 +7,13 @@ import App from './App.jsx'
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
 const ENVIRONMENT = import.meta.env.MODE || 'development';
+const SENTRY_ENABLED = (ENVIRONMENT === 'production' && !!SENTRY_DSN) || import.meta.env.VITE_SENTRY_DEBUG === 'true';
 
-if (SENTRY_DSN) {
+if (SENTRY_ENABLED && SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: ENVIRONMENT,
+    enabled: SENTRY_ENABLED,
     integrations: [
       Sentry.browserTracingIntegration(),
       Sentry.replayIntegration({
@@ -36,10 +38,8 @@ if (SENTRY_DSN) {
     ],
     
     beforeSend(event, hint) {
-      // Don't send events in development unless explicitly enabled
-      if (ENVIRONMENT === 'development' && !import.meta.env.VITE_SENTRY_DEBUG) {
-        return null;
-      }
+      // Extra guard: never send if not enabled
+      if (!SENTRY_ENABLED) return null;
       
       // Filter out sensitive data
       if (event.request) {
@@ -55,7 +55,7 @@ if (SENTRY_DSN) {
   
   console.log('✅ Sentry initialized for frontend');
 } else {
-  console.warn('⚠️  VITE_SENTRY_DSN not configured. Error tracking disabled.');
+  console.warn('⚠️  Sentry disabled (no DSN or not enabled).');
 }
 
 createRoot(document.getElementById('root')).render(
