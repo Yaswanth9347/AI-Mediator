@@ -604,6 +604,7 @@ const Dispute = sequelize.define('dispute', {
     plaintiffSignature: { type: DataTypes.STRING }, // Path to sig image
     respondentSignature: { type: DataTypes.STRING }, // Path to sig image
     agreementDocPath: { type: DataTypes.STRING },
+    resolutionViewed: { type: DataTypes.BOOLEAN, defaultValue: false },
 
     // Document Metadata (for verification)
     documentId: { type: DataTypes.STRING }, // UUID for document verification
@@ -1762,7 +1763,11 @@ const authMiddleware = async (req, res, next) => {
         }
 
         // Attach user info and session to request
-        req.user = decoded;
+        const fullUser = await User.findByPk(decoded.id);
+        if (!fullUser) {
+            return res.status(401).json({ error: 'User not found' });
+        }
+        req.user = fullUser;
         req.session = session;
         req.token = token;
         next();
@@ -1799,7 +1804,11 @@ const authMiddlewareForMedia = async (req, res, next) => {
             });
         }
 
-        req.user = decoded;
+        const fullUser = await User.findByPk(decoded.id);
+        if (!fullUser) {
+            return res.status(401).json({ error: 'User not found' });
+        }
+        req.user = fullUser;
         req.session = session;
         req.token = token;
         next();
@@ -3623,7 +3632,7 @@ app.delete('/api/users/profile-picture', authMiddleware, async (req, res) => {
                 const u = new URL(storedPath);
                 storedPath = u.pathname; // '/uploads/filename.jpg'
             }
-        } catch {}
+        } catch { }
         // Normalize to relative path without leading slash or dot
         let relativePath = storedPath
             .replace(/^\.+\/?/, '')
@@ -5476,7 +5485,10 @@ app.post('/api/disputes/:id/force-ai-analysis', authMiddleware, async (req, res)
 
         // Check if user is a party to this dispute or admin
         const user = await User.findByPk(req.user.id);
-        if (!user.isAdmin && dispute.plaintiffId !== req.user.id && dispute.respondentId !== req.user.id) {
+        const isPlaintiff = req.user.email === dispute.plaintiffEmail;
+        const isRespondent = req.user.email === dispute.respondentEmail;
+
+        if (!user.isAdmin && !isPlaintiff && !isRespondent) {
             return res.status(403).json({ error: 'Access denied' });
         }
 
@@ -5604,6 +5616,17 @@ app.post('/api/disputes/:id/evidence', authMiddleware, uploadEvidence.single('ev
     try {
         const dispute = await Dispute.findByPk(req.params.id);
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        // Prevent upload if case is closed or resolved
+        if (['Resolved', 'Closed', 'ForwardedToCourt'].includes(dispute.status)) {
+            // Clean up uploaded file since multer already saved it
+            if (req.file && req.file.path) {
+                fs.unlink(req.file.path, (err) => {
+                    if (err) console.error('Error deleting file after blocked upload:', err);
+                });
+            }
+            return res.status(403).json({ error: 'Evidence upload is disabled because the case is closed or resolved.' });
+        }
 
         const currentUser = await User.findByPk(req.user.id);
 
@@ -5810,7 +5833,9 @@ app.get('/api/disputes/:id/evidence/:evidenceId/download', authMiddlewareForMedi
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
@@ -5871,7 +5896,9 @@ app.get('/api/disputes/:id/evidence/:evidenceId/preview', authMiddlewareForMedia
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
@@ -5937,7 +5964,9 @@ app.get('/api/disputes/:id/evidence/:evidenceId', authMiddleware, async (req, re
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id || dispute.defendantId === req.user.id || dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this evidence' });
@@ -6229,6 +6258,20 @@ app.post('/api/disputes/:id/ocr/process-all', authMiddleware, async (req, res) =
 // ==================== END OCR ENDPOINTS ====================
 
 // --- New Resolution Routes ---
+
+// 0. Mark Resolution Viewed
+app.post('/api/disputes/:id/resolution-viewed', authMiddleware, async (req, res) => {
+    try {
+        const dispute = await Dispute.findByPk(req.params.id);
+        if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
+
+        // Update flag
+        await dispute.update({ resolutionViewed: true });
+        res.json({ success: true, resolutionViewed: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // 1. Verify Details
 app.post('/api/disputes/:id/verify-details', authMiddleware, async (req, res) => {
@@ -7220,9 +7263,9 @@ app.get('/api/disputes/:id/report/summary', authMiddleware, async (req, res) => 
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id ||
-            dispute.defendantId === req.user.id ||
-            dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this report' });
@@ -7332,9 +7375,9 @@ app.get('/api/disputes/:id/report/agreement', authMiddlewareForMedia, async (req
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id ||
-            dispute.defendantId === req.user.id ||
-            dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             logError('Unauthorized agreement download attempt', { disputeId: dispute.id, userId: req.user?.id });
@@ -7395,9 +7438,9 @@ app.get('/api/disputes/:id/report/agreement/preview', authMiddlewareForMedia, as
 
         // Verify access
         const isAdmin = req.user.role === 'Admin';
-        const isParty = dispute.plaintiffId === req.user.id ||
-            dispute.defendantId === req.user.id ||
-            dispute.creatorId === req.user.id;
+        const isParty = req.user.email === dispute.plaintiffEmail ||
+            req.user.email === dispute.respondentEmail ||
+            req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) {
             return res.status(403).json({ error: 'Not authorized to access this document' });

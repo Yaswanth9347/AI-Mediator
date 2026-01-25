@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frontend</title>
+    <script type="module">
+      if (import.meta.env?.DEV && !window.__vite_plugin_react_preamble_installed__) {
+        import('/@react-refresh')
+          .then((RefreshRuntime) => {
+            RefreshRuntime.injectIntoGlobalHook(window);
+            window.$RefreshReg$ = () => {};
+            window.$RefreshSig$ = () => (type) => type;
+            window.__vite_plugin_react_preamble_installed__ = true;
+          })
+          .catch((e) => console.warn('React Refresh preamble load failed:', e));
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

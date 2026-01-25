@@ -81,7 +81,7 @@ function Navbar() {
   };
 
   return (
-    <nav className="bg-white dark:bg-gray-800 shadow-md transform transition-colors duration-200">
+    <nav className="bg-white dark:bg-gray-800 shadow-md relative z-50 transform transition-colors duration-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex items-center">
@@ -218,13 +218,17 @@ function AppContent() {
   );
 }
 
+import { NotificationProvider } from './context/NotificationContext';
+
 function App() {
   return (
     <ErrorBoundary>
       <Sentry.ErrorBoundary fallback={<div>An error has occurred</div>} showDialog>
         <BrowserRouter>
           <SocketProvider>
-            <AppContent />
+            <NotificationProvider>
+              <AppContent />
+            </NotificationProvider>
           </SocketProvider>
         </BrowserRouter>
       </Sentry.ErrorBoundary>

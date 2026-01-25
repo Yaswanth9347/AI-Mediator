@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { uploadEvidence, getEvidence, deleteEvidence, downloadEvidence, getEvidencePreviewUrl, getEvidenceOcr, processEvidenceOcr, processAllOcr } from '../api';
-import { 
-    Upload, 
-    File, 
-    Image, 
-    Video, 
-    FileText, 
-    Download, 
-    Trash2, 
-    Eye, 
+import {
+    Upload,
+    File,
+    Image,
+    Video,
+    FileText,
+    Download,
+    Trash2,
+    Eye,
     X,
     CheckCircle,
     AlertCircle,
@@ -40,7 +40,7 @@ const getFileTypeFromPath = (filePath) => {
     const docExts = ['pdf', 'doc', 'docx'];
     const videoExts = ['mp4', 'mpeg', 'mov', 'webm'];
     const audioExts = ['mp3', 'wav', 'ogg'];
-    
+
     if (imageExts.includes(ext)) return 'image';
     if (docExts.includes(ext)) return 'document';
     if (videoExts.includes(ext)) return 'video';
@@ -63,7 +63,7 @@ const getFileUrlFromPath = (filePath) => {
     return `http://localhost:5000/uploads/${cleanPath}`;
 };
 
-export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, isAdmin, messageAttachments = [] }) {
+export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, isAdmin, messageAttachments = [], caseStatus = 'Active' }) {
     const [evidence, setEvidence] = useState([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -76,7 +76,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
     const [imageRotation, setImageRotation] = useState(0);
     const [downloading, setDownloading] = useState(null);
     const fileInputRef = useRef(null);
-    
+
     // OCR State
     const [ocrData, setOcrData] = useState({}); // { evidenceId: { text, status, ... } }
     const [ocrLoading, setOcrLoading] = useState({}); // { evidenceId: boolean }
@@ -86,14 +86,16 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
     const [viewingMessageAttachment, setViewingMessageAttachment] = useState(null);
 
     // Only plaintiff and defendant can upload evidence; admin can only view
-    const canUpload = isPlaintiff || isDefendant;
+    // Also block uploads if case is Resolved, Closed or ForwardedToCourt
+    const isCaseClosed = ['Resolved', 'Closed', 'ForwardedToCourt'].includes(caseStatus);
+    const canUpload = (isPlaintiff || isDefendant) && !isCaseClosed;
 
     // OCR supported MIME types
     const ocrSupportedTypes = [
-        'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 
+        'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
         'image/bmp', 'image/tiff', 'image/webp'
     ];
-    
+
     const isOcrSupported = (mimeType) => ocrSupportedTypes.includes(mimeType);
 
     // Previewable MIME types
@@ -142,8 +144,8 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
         try {
             setOcrLoading(prev => ({ ...prev, [evidenceId]: true }));
             const response = await processEvidenceOcr(disputeId, evidenceId);
-            setOcrData(prev => ({ 
-                ...prev, 
+            setOcrData(prev => ({
+                ...prev,
                 [evidenceId]: {
                     ocrStatus: response.data.status || 'completed',
                     ocrText: response.data.text,
@@ -188,7 +190,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
 
     const getOcrStatusBadge = (item) => {
         const status = ocrData[item.id]?.ocrStatus || item.ocrStatus;
-        
+
         if (!isOcrSupported(item.mimeType)) {
             return null; // Don't show badge for non-supported types
         }
@@ -237,7 +239,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                 e.target.value = ''; // Clear input
                 return;
             }
-            
+
             // Validate file type
             const allowedTypes = [
                 'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
@@ -247,24 +249,24 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                 'application/msword',
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             ];
-            
+
             if (!allowedTypes.includes(file.type)) {
                 toast.error('Invalid file type. Please upload an image, PDF, video, audio, or document file.');
                 e.target.value = ''; // Clear input
                 return;
             }
-            
+
             // Validate file extension (additional security)
             const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.mp4', '.mpeg', '.mov', '.mp3', '.wav', '.doc', '.docx'];
             const fileName = file.name.toLowerCase();
             const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
-            
+
             if (!hasValidExtension) {
                 toast.error('Invalid file extension. Please check the file type.');
                 e.target.value = ''; // Clear input
                 return;
             }
-            
+
             setSelectedFile(file);
         }
     };
@@ -292,7 +294,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                 toast.error(`File too large. Maximum size is 50MB. Your file is ${(file.size / 1024 / 1024).toFixed(2)}MB.`);
                 return;
             }
-            
+
             // Validate file type
             const allowedTypes = [
                 'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
@@ -302,12 +304,12 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                 'application/msword',
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             ];
-            
+
             if (!allowedTypes.includes(file.type)) {
                 toast.error('Invalid file type. Please upload an image, PDF, video, audio, or document file.');
                 return;
             }
-            
+
             setSelectedFile(file);
         }
     };
@@ -328,7 +330,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
 
             await uploadEvidence(disputeId, formData);
             toast.success('Evidence uploaded successfully');
-            
+
             // Reset form
             setSelectedFile(null);
             setDescription('');
@@ -381,7 +383,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
         try {
             setDownloading(item.id);
             const token = localStorage.getItem('token');
-            
+
             // Create a link to download with proper authentication
             const response = await fetch(
                 `http://localhost:5000/api/disputes/${disputeId}/evidence/${item.id}/download`,
@@ -391,11 +393,11 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                     }
                 }
             );
-            
+
             if (!response.ok) {
                 throw new Error('Download failed');
             }
-            
+
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -405,7 +407,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
             a.click();
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
-            
+
             toast.success('Download started');
         } catch (error) {
             console.error('Download failed:', error);
@@ -461,11 +463,10 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
             <div className="flex gap-2 mb-6 border-b border-blue-800">
                 <button
                     onClick={() => setActiveTab('evidence')}
-                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'evidence'
+                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${activeTab === 'evidence'
                             ? 'text-blue-100'
                             : 'text-blue-400 hover:text-blue-300'
-                    }`}
+                        }`}
                 >
                     <span className="flex items-center gap-2">
                         <Upload className="w-4 h-4" />
@@ -482,11 +483,10 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                 </button>
                 <button
                     onClick={() => setActiveTab('attachments')}
-                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-                        activeTab === 'attachments'
+                    className={`px-4 py-2 text-sm font-medium transition-colors relative ${activeTab === 'attachments'
                             ? 'text-blue-100'
                             : 'text-blue-400 hover:text-blue-300'
-                    }`}
+                        }`}
                 >
                     <span className="flex items-center gap-2">
                         <MessageSquare className="w-4 h-4" />
@@ -507,17 +507,29 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
             {activeTab === 'evidence' && (
                 <>
                     {/* Upload Section */}
+                    {isCaseClosed && (
+                        <div className="mb-6 p-4 bg-amber-900/20 rounded-lg border border-amber-800/50 flex items-start gap-3">
+                            <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5" />
+                            <div>
+                                <h4 className="text-sm font-semibold text-amber-400 mb-1">Evidence Upload Disabled</h4>
+                                <p className="text-sm text-amber-200/80">
+                                    Uploading new evidence is disabled because this case is {caseStatus === 'ForwardedToCourt' ? 'forwarded to court' : 'closed'}.
+                                    Existing evidence remains accessible.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
                     {canUpload && (
                         <div className="mb-6 p-4 bg-slate-900/50 rounded-lg border border-blue-800/50">
                             <h4 className="text-sm font-semibold text-blue-200 mb-3">Upload Evidence</h4>
-                            
+
                             {/* Drag & Drop Area */}
                             <div
-                                className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                                    dragActive 
-                                        ? 'border-blue-500 bg-blue-500/10' 
+                                className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${dragActive
+                                        ? 'border-blue-500 bg-blue-500/10'
                                         : 'border-blue-800 bg-slate-800/30 hover:border-blue-700'
-                                }`}
+                                    }`}
                                 onDragEnter={handleDrag}
                                 onDragLeave={handleDrag}
                                 onDragOver={handleDrag}
@@ -531,276 +543,275 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                     className="hidden"
                                     id="evidence-upload"
                                 />
-                                
+
                                 {selectedFile ? (
                                     <div className="space-y-3">
                                         <div className="flex items-center justify-center gap-2 text-green-400">
                                             <CheckCircle className="w-5 h-5" />
-                                    <span className="font-medium">{selectedFile.name}</span>
-                                </div>
-                                <p className="text-xs text-blue-300">{formatFileSize(selectedFile.size)}</p>
-                                <button
-                                    onClick={() => {
-                                        setSelectedFile(null);
-                                        if (fileInputRef.current) fileInputRef.current.value = '';
-                                    }}
-                                    className="text-xs text-red-400 hover:text-red-300"
-                                >
-                                    Remove
-                                </button>
+                                            <span className="font-medium">{selectedFile.name}</span>
+                                        </div>
+                                        <p className="text-xs text-blue-300">{formatFileSize(selectedFile.size)}</p>
+                                        <button
+                                            onClick={() => {
+                                                setSelectedFile(null);
+                                                if (fileInputRef.current) fileInputRef.current.value = '';
+                                            }}
+                                            className="text-xs text-red-400 hover:text-red-300"
+                                        >
+                                            Remove
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        <Upload className="w-8 h-8 mx-auto text-blue-400" />
+                                        <p className="text-sm text-blue-200">
+                                            Drag & drop a file here, or{' '}
+                                            <label htmlFor="evidence-upload" className="text-blue-400 hover:text-blue-300 cursor-pointer underline">
+                                                browse
+                                            </label>
+                                        </p>
+                                        <p className="text-xs text-blue-400">
+                                            Supports: Images, Videos, Audio, PDFs, Documents (Max 50MB)
+                                        </p>
+                                    </div>
+                                )}
                             </div>
-                        ) : (
-                            <div className="space-y-2">
-                                <Upload className="w-8 h-8 mx-auto text-blue-400" />
-                                <p className="text-sm text-blue-200">
-                                    Drag & drop a file here, or{' '}
-                                    <label htmlFor="evidence-upload" className="text-blue-400 hover:text-blue-300 cursor-pointer underline">
-                                        browse
-                                    </label>
-                                </p>
-                                <p className="text-xs text-blue-400">
-                                    Supports: Images, Videos, Audio, PDFs, Documents (Max 50MB)
-                                </p>
+
+                            {/* Description */}
+                            <div className="mt-3">
+                                <label className="block text-xs text-blue-300 mb-1">
+                                    Description (optional)
+                                </label>
+                                <textarea
+                                    value={description}
+                                    onChange={(e) => setDescription(e.target.value)}
+                                    placeholder="Describe this evidence..."
+                                    rows={2}
+                                    className="w-full px-3 py-2 bg-slate-900/50 border border-blue-800 rounded text-sm text-blue-100 placeholder-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
                             </div>
-                        )}
-                    </div>
 
-                    {/* Description */}
-                    <div className="mt-3">
-                        <label className="block text-xs text-blue-300 mb-1">
-                            Description (optional)
-                        </label>
-                        <textarea
-                            value={description}
-                            onChange={(e) => setDescription(e.target.value)}
-                            placeholder="Describe this evidence..."
-                            rows={2}
-                            className="w-full px-3 py-2 bg-slate-900/50 border border-blue-800 rounded text-sm text-blue-100 placeholder-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                    </div>
-
-                    {/* Upload Button */}
-                    <button
-                        onClick={handleUpload}
-                        disabled={!selectedFile || uploading}
-                        className="mt-3 w-full px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                        {uploading ? (
-                            <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                                Uploading...
-                            </>
-                        ) : (
-                            <>
-                                <Upload className="w-4 h-4" />
-                                Upload Evidence
-                            </>
-                        )}
-                    </button>
-                </div>
-            )}
-
-            {/* Evidence List */}
-            {loading ? (
-                <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
-                    <span className="ml-3 text-blue-300">Loading evidence...</span>
-                </div>
-            ) : evidence.length === 0 ? (
-                <div className="text-center py-8 text-blue-300">
-                    <Paperclip className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                    <p>No evidence uploaded yet</p>
-                </div>
-            ) : (
-                <div className="space-y-3">
-                    {/* Batch OCR Button - show if there are pending OCR files */}
-                    {evidence.some(e => isOcrSupported(e.mimeType) && (e.ocrStatus === 'pending' || e.ocrStatus === 'failed')) && (
-                        <button
-                            onClick={handleProcessAllOcr}
-                            disabled={processingAllOcr}
-                            className="w-full px-3 py-2 bg-purple-600/20 text-purple-300 text-sm rounded border border-purple-600/30 hover:bg-purple-600/30 flex items-center justify-center gap-2 disabled:opacity-50"
-                        >
-                            {processingAllOcr ? (
-                                <>
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                    Processing OCR...
-                                </>
-                            ) : (
-                                <>
-                                    <FileSearch className="w-4 h-4" />
-                                    Extract Text from All Images (OCR)
-                                </>
-                            )}
-                        </button>
+                            {/* Upload Button */}
+                            <button
+                                onClick={handleUpload}
+                                disabled={!selectedFile || uploading}
+                                className="mt-3 w-full px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                            >
+                                {uploading ? (
+                                    <>
+                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                                        Uploading...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Upload className="w-4 h-4" />
+                                        Upload Evidence
+                                    </>
+                                )}
+                            </button>
+                        </div>
                     )}
 
-                    {evidence.map((item) => (
-                        <div 
-                            key={item.id} 
-                            className="bg-slate-900/50 rounded-lg border border-blue-800/50 hover:border-blue-700 transition-colors overflow-hidden"
-                        >
-                            <div className="flex items-center gap-3 p-3">
-                                {/* File Icon */}
-                                <div className="p-2 bg-blue-500/20 rounded text-blue-400">
-                                    {getFileIcon(item.fileType)}
-                                </div>
-
-                                {/* File Info */}
-                                <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-blue-100 truncate">
-                                        {item.originalName}
-                                    </p>
-                                    <div className="flex flex-wrap items-center gap-2 mt-1">
-                                        <span className={`px-2 py-0.5 text-xs rounded border ${getRoleBadgeColor(item.uploaderRole)}`}>
-                                            {item.uploaderRole}
-                                        </span>
-                                        <span className="text-xs text-blue-400">
-                                            {item.uploaderName}
-                                        </span>
-                                        <span className="text-xs text-blue-500">
-                                            {formatFileSize(item.fileSize)}
-                                        </span>
-                                        <span className="text-xs text-blue-500">
-                                            {new Date(item.createdAt).toLocaleDateString()}
-                                        </span>
-                                        {item.isVerified && (
-                                            <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-xs rounded border border-green-500/30 flex items-center gap-1">
-                                                <CheckCircle className="w-3 h-3" />
-                                                Verified
-                                            </span>
-                                        )}
-                                        {getOcrStatusBadge(item)}
-                                    </div>
-                                    {item.description && (
-                                        <p className="text-xs text-blue-300 mt-1 line-clamp-2">
-                                            {item.description}
-                                        </p>
-                                    )}
-                                </div>
-
-                                {/* Actions */}
-                                <div className="flex items-center gap-1">
-                                    {/* OCR Toggle Button */}
-                                    {isOcrSupported(item.mimeType) && (
-                                        <button
-                                            onClick={() => toggleOcrExpand(item.id)}
-                                            className={`p-2 rounded transition-colors ${
-                                                expandedOcr[item.id] 
-                                                    ? 'text-purple-300 bg-purple-500/20' 
-                                                    : 'text-purple-400 hover:text-purple-300 hover:bg-purple-500/10'
-                                            }`}
-                                            title="View OCR Text"
-                                        >
+                    {/* Evidence List */}
+                    {loading ? (
+                        <div className="flex items-center justify-center py-8">
+                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+                            <span className="ml-3 text-blue-300">Loading evidence...</span>
+                        </div>
+                    ) : evidence.length === 0 ? (
+                        <div className="text-center py-8 text-blue-300">
+                            <Paperclip className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                            <p>No evidence uploaded yet</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {/* Batch OCR Button - show if there are pending OCR files */}
+                            {evidence.some(e => isOcrSupported(e.mimeType) && (e.ocrStatus === 'pending' || e.ocrStatus === 'failed')) && (
+                                <button
+                                    onClick={handleProcessAllOcr}
+                                    disabled={processingAllOcr}
+                                    className="w-full px-3 py-2 bg-purple-600/20 text-purple-300 text-sm rounded border border-purple-600/30 hover:bg-purple-600/30 flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
+                                    {processingAllOcr ? (
+                                        <>
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                            Processing OCR...
+                                        </>
+                                    ) : (
+                                        <>
                                             <FileSearch className="w-4 h-4" />
-                                        </button>
+                                            Extract Text from All Images (OCR)
+                                        </>
                                     )}
-                                    {canPreview(item.mimeType) && (
-                                        <button
-                                            onClick={() => handlePreview(item)}
-                                            className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
-                                            title="Preview"
-                                        >
-                                            <Eye className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => handleDownload(item)}
-                                        disabled={downloading === item.id}
-                                        className="p-2 text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
-                                        title="Download"
-                                    >
-                                        {downloading === item.id ? (
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : (
-                                            <Download className="w-4 h-4" />
-                                        )}
-                                    </button>
-                                    {canDelete(item) && (
-                                        <button
-                                            onClick={() => handleDelete(item.id)}
-                                            className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
-                                            title="Delete"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
+                                </button>
+                            )}
 
-                            {/* OCR Expandable Section */}
-                            {expandedOcr[item.id] && isOcrSupported(item.mimeType) && (
-                                <div className="px-3 pb-3 border-t border-blue-800/30 mt-1 pt-3">
-                                    {ocrLoading[item.id] ? (
-                                        <div className="flex items-center gap-2 text-blue-300 text-sm">
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                            Loading OCR data...
+                            {evidence.map((item) => (
+                                <div
+                                    key={item.id}
+                                    className="bg-slate-900/50 rounded-lg border border-blue-800/50 hover:border-blue-700 transition-colors overflow-hidden"
+                                >
+                                    <div className="flex items-center gap-3 p-3">
+                                        {/* File Icon */}
+                                        <div className="p-2 bg-blue-500/20 rounded text-blue-400">
+                                            {getFileIcon(item.fileType)}
                                         </div>
-                                    ) : ocrData[item.id]?.ocrStatus === 'completed' && ocrData[item.id]?.ocrText ? (
-                                        <div className="space-y-2">
-                                            <div className="flex items-center justify-between">
-                                                <span className="text-xs text-blue-400 font-medium">Extracted Text (OCR)</span>
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-xs text-blue-500">
-                                                        {ocrData[item.id].ocrText.split(/\s+/).filter(w => w.length > 0).length} words
+
+                                        {/* File Info */}
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium text-blue-100 truncate">
+                                                {item.originalName}
+                                            </p>
+                                            <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                <span className={`px-2 py-0.5 text-xs rounded border ${getRoleBadgeColor(item.uploaderRole)}`}>
+                                                    {item.uploaderRole}
+                                                </span>
+                                                <span className="text-xs text-blue-400">
+                                                    {item.uploaderName}
+                                                </span>
+                                                <span className="text-xs text-blue-500">
+                                                    {formatFileSize(item.fileSize)}
+                                                </span>
+                                                <span className="text-xs text-blue-500">
+                                                    {new Date(item.createdAt).toLocaleDateString()}
+                                                </span>
+                                                {item.isVerified && (
+                                                    <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-xs rounded border border-green-500/30 flex items-center gap-1">
+                                                        <CheckCircle className="w-3 h-3" />
+                                                        Verified
+                                                    </span>
+                                                )}
+                                                {getOcrStatusBadge(item)}
+                                            </div>
+                                            {item.description && (
+                                                <p className="text-xs text-blue-300 mt-1 line-clamp-2">
+                                                    {item.description}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Actions */}
+                                        <div className="flex items-center gap-1">
+                                            {/* OCR Toggle Button */}
+                                            {isOcrSupported(item.mimeType) && (
+                                                <button
+                                                    onClick={() => toggleOcrExpand(item.id)}
+                                                    className={`p-2 rounded transition-colors ${expandedOcr[item.id]
+                                                            ? 'text-purple-300 bg-purple-500/20'
+                                                            : 'text-purple-400 hover:text-purple-300 hover:bg-purple-500/10'
+                                                        }`}
+                                                    title="View OCR Text"
+                                                >
+                                                    <FileSearch className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                            {canPreview(item.mimeType) && (
+                                                <button
+                                                    onClick={() => handlePreview(item)}
+                                                    className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                                    title="Preview"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => handleDownload(item)}
+                                                disabled={downloading === item.id}
+                                                className="p-2 text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded transition-colors disabled:opacity-50"
+                                                title="Download"
+                                            >
+                                                {downloading === item.id ? (
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                ) : (
+                                                    <Download className="w-4 h-4" />
+                                                )}
+                                            </button>
+                                            {canDelete(item) && (
+                                                <button
+                                                    onClick={() => handleDelete(item.id)}
+                                                    className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                                                    title="Delete"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* OCR Expandable Section */}
+                                    {expandedOcr[item.id] && isOcrSupported(item.mimeType) && (
+                                        <div className="px-3 pb-3 border-t border-blue-800/30 mt-1 pt-3">
+                                            {ocrLoading[item.id] ? (
+                                                <div className="flex items-center gap-2 text-blue-300 text-sm">
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                    Loading OCR data...
+                                                </div>
+                                            ) : ocrData[item.id]?.ocrStatus === 'completed' && ocrData[item.id]?.ocrText ? (
+                                                <div className="space-y-2">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-xs text-blue-400 font-medium">Extracted Text (OCR)</span>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-xs text-blue-500">
+                                                                {ocrData[item.id].ocrText.split(/\s+/).filter(w => w.length > 0).length} words
+                                                            </span>
+                                                            <button
+                                                                onClick={() => copyOcrText(ocrData[item.id].ocrText)}
+                                                                className="p-1 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded"
+                                                                title="Copy text"
+                                                            >
+                                                                <Copy className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="bg-slate-800/50 rounded p-3 max-h-48 overflow-y-auto">
+                                                        <pre className="text-xs text-blue-100 whitespace-pre-wrap font-mono leading-relaxed">
+                                                            {ocrData[item.id].ocrText}
+                                                        </pre>
+                                                    </div>
+                                                </div>
+                                            ) : ocrData[item.id]?.ocrStatus === 'failed' || item.ocrStatus === 'failed' ? (
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs text-red-400">
+                                                        OCR processing failed: {ocrData[item.id]?.ocrError || 'Unknown error'}
                                                     </span>
                                                     <button
-                                                        onClick={() => copyOcrText(ocrData[item.id].ocrText)}
-                                                        className="p-1 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded"
-                                                        title="Copy text"
+                                                        onClick={() => handleProcessOcr(item.id)}
+                                                        className="px-2 py-1 text-xs bg-blue-600/20 text-blue-300 rounded hover:bg-blue-600/30 flex items-center gap-1"
                                                     >
-                                                        <Copy className="w-3.5 h-3.5" />
+                                                        <RefreshCw className="w-3 h-3" />
+                                                        Retry
                                                     </button>
                                                 </div>
-                                            </div>
-                                            <div className="bg-slate-800/50 rounded p-3 max-h-48 overflow-y-auto">
-                                                <pre className="text-xs text-blue-100 whitespace-pre-wrap font-mono leading-relaxed">
-                                                    {ocrData[item.id].ocrText}
-                                                </pre>
-                                            </div>
-                                        </div>
-                                    ) : ocrData[item.id]?.ocrStatus === 'failed' || item.ocrStatus === 'failed' ? (
-                                        <div className="flex items-center justify-between">
-                                            <span className="text-xs text-red-400">
-                                                OCR processing failed: {ocrData[item.id]?.ocrError || 'Unknown error'}
-                                            </span>
-                                            <button
-                                                onClick={() => handleProcessOcr(item.id)}
-                                                className="px-2 py-1 text-xs bg-blue-600/20 text-blue-300 rounded hover:bg-blue-600/30 flex items-center gap-1"
-                                            >
-                                                <RefreshCw className="w-3 h-3" />
-                                                Retry
-                                            </button>
-                                        </div>
-                                    ) : ocrData[item.id]?.ocrStatus === 'completed' && !ocrData[item.id]?.ocrText ? (
-                                        <div className="text-xs text-blue-400">
-                                            No text was extracted from this image. The image may not contain readable text.
-                                        </div>
-                                    ) : (
-                                        <div className="flex items-center justify-between">
-                                            <span className="text-xs text-blue-400">
-                                                Text has not been extracted from this image yet.
-                                            </span>
-                                            <button
-                                                onClick={() => handleProcessOcr(item.id)}
-                                                disabled={ocrLoading[item.id]}
-                                                className="px-2 py-1 text-xs bg-purple-600/20 text-purple-300 rounded hover:bg-purple-600/30 flex items-center gap-1 disabled:opacity-50"
-                                            >
-                                                {ocrLoading[item.id] ? (
-                                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                                ) : (
-                                                    <FileSearch className="w-3 h-3" />
-                                                )}
-                                                Extract Text
-                                            </button>
+                                            ) : ocrData[item.id]?.ocrStatus === 'completed' && !ocrData[item.id]?.ocrText ? (
+                                                <div className="text-xs text-blue-400">
+                                                    No text was extracted from this image. The image may not contain readable text.
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs text-blue-400">
+                                                        Text has not been extracted from this image yet.
+                                                    </span>
+                                                    <button
+                                                        onClick={() => handleProcessOcr(item.id)}
+                                                        disabled={ocrLoading[item.id]}
+                                                        className="px-2 py-1 text-xs bg-purple-600/20 text-purple-300 rounded hover:bg-purple-600/30 flex items-center gap-1 disabled:opacity-50"
+                                                    >
+                                                        {ocrLoading[item.id] ? (
+                                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                                        ) : (
+                                                            <FileSearch className="w-3 h-3" />
+                                                        )}
+                                                        Extract Text
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
-                            )}
+                            ))}
                         </div>
-                    ))}
-                </div>
-            )}
-            </>
+                    )}
+                </>
             )}
 
             {/* Message Attachments Tab Content */}
@@ -818,7 +829,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                 const fileType = getFileTypeFromPath(msg.attachmentPath);
                                 const fileName = getFileNameFromPath(msg.attachmentPath);
                                 const fileUrl = getFileUrlFromPath(msg.attachmentPath);
-                                
+
                                 return (
                                     <div
                                         key={msg.id}
@@ -826,7 +837,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                     >
                                         {/* Thumbnail/Preview */}
                                         {fileType === 'image' ? (
-                                            <div 
+                                            <div
                                                 className="relative h-32 bg-slate-800 cursor-pointer group"
                                                 onClick={() => setViewingMessageAttachment({ type: 'image', url: fileUrl, name: fileName, sender: msg.senderName, role: msg.senderRole, time: msg.createdAt })}
                                             >
@@ -840,7 +851,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                                 </div>
                                             </div>
                                         ) : (
-                                            <div 
+                                            <div
                                                 className="h-32 bg-slate-800 flex items-center justify-center cursor-pointer group hover:bg-slate-700/50 transition-colors"
                                                 onClick={() => setViewingMessageAttachment({ type: fileType, url: fileUrl, name: fileName, sender: msg.senderName, role: msg.senderRole, time: msg.createdAt })}
                                             >
@@ -852,7 +863,7 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                                 {fileType === 'file' && <File className="w-12 h-12 text-gray-400" />}
                                             </div>
                                         )}
-                                        
+
                                         {/* File Info */}
                                         <div className="p-3">
                                             <p className="text-sm text-blue-100 truncate font-medium" title={fileName}>
@@ -862,11 +873,10 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                                 <div className="flex items-center gap-1.5">
                                                     <User className="w-3 h-3 text-blue-400" />
                                                     <span className="text-xs text-blue-300">{msg.senderName}</span>
-                                                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                                        msg.senderRole === 'plaintiff' 
-                                                            ? 'bg-blue-500/20 text-blue-300' 
+                                                    <span className={`text-xs px-1.5 py-0.5 rounded ${msg.senderRole === 'plaintiff'
+                                                            ? 'bg-blue-500/20 text-blue-300'
                                                             : 'bg-slate-600/50 text-slate-300'
-                                                    }`}>
+                                                        }`}>
                                                         {msg.senderRole}
                                                     </span>
                                                 </div>
@@ -885,11 +895,11 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
 
             {/* Message Attachment Preview Modal */}
             {viewingMessageAttachment && (
-                <div 
+                <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
                     onClick={() => setViewingMessageAttachment(null)}
                 >
-                    <div 
+                    <div
                         className="relative w-full max-w-4xl max-h-[90vh] m-4 flex flex-col bg-slate-900 rounded-lg border border-blue-800 overflow-hidden"
                         onClick={(e) => e.stopPropagation()}
                     >
@@ -924,12 +934,12 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                                 </button>
                             </div>
                         </div>
-                        
+
                         {/* Content */}
                         <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[400px]">
                             {viewingMessageAttachment.type === 'image' && (
-                                <img 
-                                    src={viewingMessageAttachment.url} 
+                                <img
+                                    src={viewingMessageAttachment.url}
                                     alt={viewingMessageAttachment.name}
                                     className="max-w-full max-h-[70vh] object-contain rounded"
                                 />
@@ -1181,8 +1191,8 @@ export default function EvidenceSection({ disputeId, isPlaintiff, isDefendant, i
                     </div>
 
                     {/* Click outside to close */}
-                    <div 
-                        className="absolute inset-0 -z-10" 
+                    <div
+                        className="absolute inset-0 -z-10"
                         onClick={closePreview}
                     />
                 </div>

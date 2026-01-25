@@ -6,8 +6,10 @@ import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageC
 import SignatureCanvas from 'react-signature-canvas';
 import toast from 'react-hot-toast';
 import { useSocket } from '../context/SocketContext';
+import { useNotifications } from '../context/NotificationContext';
 import CaseHistory from '../components/CaseHistory';
 import EvidenceSection from '../components/EvidenceSection';
+import ResolutionProgress from '../components/ResolutionProgress';
 
 // Helper function to get file type from path
 const getFileType = (filePath) => {
@@ -17,7 +19,7 @@ const getFileType = (filePath) => {
     const docExts = ['pdf', 'doc', 'docx'];
     const videoExts = ['mp4', 'mpeg', 'mov', 'webm'];
     const audioExts = ['mp3', 'wav', 'ogg'];
-    
+
     if (imageExts.includes(ext)) return 'image';
     if (docExts.includes(ext)) return 'document';
     if (videoExts.includes(ext)) return 'video';
@@ -52,7 +54,7 @@ export default function DisputeDetail() {
     const [aiSolutions, setAiSolutions] = useState([]);
     const [loading, setLoading] = useState(true);
     const messagesEndRef = useRef(null);
-    
+
     // Attachment preview modal
     const [previewAttachment, setPreviewAttachment] = useState(null);
 
@@ -68,6 +70,7 @@ export default function DisputeDetail() {
 
     // Socket.io for real-time updates
     const { socket, connected, joinDisputeRoom, leaveDisputeRoom, startTyping, stopTyping } = useSocket();
+    const { acknowledgeAction } = useNotifications();
     const [typingUsers, setTypingUsers] = useState(new Set());
     const typingTimeoutRef = useRef(null);
 
@@ -388,7 +391,7 @@ export default function DisputeDetail() {
     const handleMessageChange = (e) => {
         const value = e.target.value;
         setNewMessage(value);
-        
+
         // Sync the final transcript ref when user manually types/edits
         // This ensures speech recognition appends to the correct text
         finalTranscriptRef.current = value;
@@ -417,35 +420,35 @@ export default function DisputeDetail() {
             toast.error('Speech recognition is not supported in your browser. Please use Chrome or Edge.');
             return null;
         }
-        
+
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         const recognition = new SpeechRecognition();
-        
+
         recognition.continuous = true;
         recognition.interimResults = true;
         // Empty string enables automatic language detection
         // Browser will detect the spoken language automatically
         recognition.lang = '';
-        
+
         return recognition;
     };
 
     const startListening = () => {
         const recognition = initSpeechRecognition();
         if (!recognition) return;
-        
+
         recognitionRef.current = recognition;
-        
+
         // Initialize final transcript with current message content
         finalTranscriptRef.current = newMessage;
-        
+
         recognition.onstart = () => {
             setIsListening(true);
         };
-        
+
         recognition.onresult = (event) => {
             let interimTranscript = '';
-            
+
             // Process results from the current result index onwards
             for (let i = event.resultIndex; i < event.results.length; i++) {
                 const transcript = event.results[i][0].transcript;
@@ -458,20 +461,20 @@ export default function DisputeDetail() {
                     interimTranscript += transcript;
                 }
             }
-            
+
             // Construct the display text: final transcript + current interim
-            const displayText = finalTranscriptRef.current + 
+            const displayText = finalTranscriptRef.current +
                 (interimTranscript ? (finalTranscriptRef.current && !finalTranscriptRef.current.endsWith(' ') ? ' ' : '') + interimTranscript : '');
-            
+
             setNewMessage(displayText);
         };
-        
+
         recognition.onerror = (event) => {
             // Only log significant errors
             if (event.error !== 'no-speech' && event.error !== 'aborted') {
                 console.error('Speech recognition error:', event.error);
             }
-            
+
             // Handle different error types gracefully
             switch (event.error) {
                 case 'no-speech':
@@ -493,17 +496,17 @@ export default function DisputeDetail() {
                     // Don't show error for minor issues
                     break;
             }
-            
+
             setIsListening(false);
         };
-        
+
         recognition.onend = () => {
             setIsListening(false);
             // Sync the final transcript ref with the current message state
             // This ensures consistency when user edits text manually
             finalTranscriptRef.current = newMessage;
         };
-        
+
         try {
             recognition.start();
         } catch (error) {
@@ -545,6 +548,7 @@ export default function DisputeDetail() {
         try {
             await acceptCase(id);
             toast.success('You accepted the case.');
+            acknowledgeAction(id, 'dispute'); // Clear "New Dispute" notification if exists
             fetchData();
         } catch (err) {
             toast.error('Failed to accept');
@@ -555,6 +559,7 @@ export default function DisputeDetail() {
         try {
             const res = await submitDecision(id, choiceIdx);
             toast.success(res.data.message);
+            acknowledgeAction(id, 'resolution'); // Clear "Resolution Ready" notification
             fetchData();
         } catch (err) {
             toast.error('Failed to submit decision');
@@ -921,6 +926,7 @@ export default function DisputeDetail() {
                         isDefendant={isDefendant}
                         isAdmin={isAdmin}
                         messageAttachments={messages}
+                        caseStatus={dispute.status}
                     />
                 </div>
             )}
@@ -968,28 +974,26 @@ export default function DisputeDetail() {
                                 // - For plaintiff: own messages on right, defendant on left
                                 // - For defendant: own messages on right, plaintiff on left  
                                 // - For admin: show plaintiff's view (plaintiff on right, defendant on left)
-                                const isOwnMessage = isAdmin 
+                                const isOwnMessage = isAdmin
                                     ? msg.senderRole === 'plaintiff'  // Admin sees plaintiff's perspective
                                     : String(msg.senderId) === String(currentUserIdResolved);
                                 // Keep role label display
                                 const isPlaintiffMessage = msg.senderRole === 'plaintiff';
                                 const isDefendantMessage = msg.senderRole === 'defendant';
-                                
+
                                 return (
-                                    <div 
-                                        key={msg.id} 
+                                    <div
+                                        key={msg.id}
                                         className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} ${msg.pending ? 'opacity-70' : ''}`}
                                     >
-                                        <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${
-                                            isOwnMessage 
-                                                ? 'bg-blue-900/60 text-blue-50 border border-blue-600 rounded-br-sm' 
-                                                : 'bg-slate-700/70 text-slate-100 border border-slate-500 rounded-bl-sm'
-                                        }`}>
-                                            <p className={`text-xs font-semibold mb-1 ${
-                                                isOwnMessage 
-                                                    ? 'text-blue-200' 
-                                                    : 'text-slate-300'
+                                        <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${isOwnMessage
+                                            ? 'bg-blue-900/60 text-blue-50 border border-blue-600 rounded-br-sm'
+                                            : 'bg-slate-700/70 text-slate-100 border border-slate-500 rounded-bl-sm'
                                             }`}>
+                                            <p className={`text-xs font-semibold mb-1 ${isOwnMessage
+                                                ? 'text-blue-200'
+                                                : 'text-slate-300'
+                                                }`}>
                                                 {msg.senderName} <span className={`font-normal ${isOwnMessage ? 'text-blue-300' : 'text-slate-400'}`}>({msg.senderRole})</span>
                                             </p>
                                             <p className="text-xs sm:text-sm break-words">{msg.content}</p>
@@ -997,18 +1001,17 @@ export default function DisputeDetail() {
                                                 const fileType = getFileType(msg.attachmentPath);
                                                 const fileUrl = getFileUrl(msg.attachmentPath);
                                                 const fileName = getFileName(msg.attachmentPath);
-                                                
+
                                                 if (fileType === 'image') {
                                                     return (
                                                         <div className="mt-2 relative group">
                                                             <img
                                                                 src={fileUrl}
                                                                 alt="Attachment"
-                                                                className={`max-w-[200px] max-h-[150px] object-cover rounded cursor-pointer transition-all ${
-                                                                    isOwnMessage 
-                                                                        ? 'border border-blue-600 hover:border-blue-400' 
-                                                                        : 'border border-slate-500 hover:border-slate-400'
-                                                                }`}
+                                                                className={`max-w-[200px] max-h-[150px] object-cover rounded cursor-pointer transition-all ${isOwnMessage
+                                                                    ? 'border border-blue-600 hover:border-blue-400'
+                                                                    : 'border border-slate-500 hover:border-slate-400'
+                                                                    }`}
                                                                 onClick={() => setPreviewAttachment({ type: 'image', url: fileUrl, name: fileName })}
                                                             />
                                                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
@@ -1019,12 +1022,11 @@ export default function DisputeDetail() {
                                                 } else if (fileType === 'document') {
                                                     const isPdf = fileName.toLowerCase().endsWith('.pdf');
                                                     return (
-                                                        <div 
-                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                                                                isOwnMessage 
-                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
-                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
-                                                            }`}
+                                                        <div
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${isOwnMessage
+                                                                ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600'
+                                                                : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                                }`}
                                                             onClick={() => setPreviewAttachment({ type: 'document', url: fileUrl, name: fileName, isPdf })}
                                                         >
                                                             <FileText className={`w-8 h-8 ${isPdf ? 'text-red-400' : 'text-blue-400'}`} />
@@ -1037,12 +1039,11 @@ export default function DisputeDetail() {
                                                     );
                                                 } else if (fileType === 'video') {
                                                     return (
-                                                        <div 
-                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                                                                isOwnMessage 
-                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
-                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
-                                                            }`}
+                                                        <div
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${isOwnMessage
+                                                                ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600'
+                                                                : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                                }`}
                                                             onClick={() => setPreviewAttachment({ type: 'video', url: fileUrl, name: fileName })}
                                                         >
                                                             <Video className="w-8 h-8 text-purple-400" />
@@ -1055,12 +1056,11 @@ export default function DisputeDetail() {
                                                     );
                                                 } else if (fileType === 'audio') {
                                                     return (
-                                                        <div 
-                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                                                                isOwnMessage 
-                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
-                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
-                                                            }`}
+                                                        <div
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${isOwnMessage
+                                                                ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600'
+                                                                : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                                }`}
                                                             onClick={() => setPreviewAttachment({ type: 'audio', url: fileUrl, name: fileName })}
                                                         >
                                                             <FileAudio className="w-8 h-8 text-green-400" />
@@ -1073,12 +1073,11 @@ export default function DisputeDetail() {
                                                     );
                                                 } else {
                                                     return (
-                                                        <div 
-                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                                                                isOwnMessage 
-                                                                    ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600' 
-                                                                    : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
-                                                            }`}
+                                                        <div
+                                                            className={`mt-2 flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${isOwnMessage
+                                                                ? 'bg-blue-800/40 hover:bg-blue-800/60 border border-blue-600'
+                                                                : 'bg-slate-600/40 hover:bg-slate-600/60 border border-slate-500'
+                                                                }`}
                                                             onClick={() => window.open(fileUrl, '_blank')}
                                                         >
                                                             <File className="w-8 h-8 text-gray-400" />
@@ -1139,23 +1138,22 @@ export default function DisputeDetail() {
                                     </div>
                                 </div>
                             )}
-                            
+
                             {/* Message Input Row */}
                             <form onSubmit={handleSendMessage} className="p-2 sm:p-4 flex items-center gap-1 sm:gap-2">
                                 <label className="cursor-pointer text-blue-400 hover:text-blue-300 p-1.5" title="Attach file (images, PDF, documents)">
                                     <Paperclip className="w-4 h-4 sm:w-5 sm:h-5" />
                                     <input type="file" className="hidden" accept="image/*,.pdf,.doc,.docx,video/*,audio/*" onChange={(e) => setAttachment(e.target.files[0])} />
                                 </label>
-                                
+
                                 {/* Microphone Button */}
                                 <button
                                     type="button"
                                     onClick={toggleListening}
-                                    className={`p-1.5 rounded-full transition-all ${
-                                        isListening 
-                                            ? 'bg-red-500 text-white animate-pulse hover:bg-red-600' 
-                                            : 'text-blue-400 hover:text-blue-300 hover:bg-blue-900/30'
-                                    }`}
+                                    className={`p-1.5 rounded-full transition-all ${isListening
+                                        ? 'bg-red-500 text-white animate-pulse hover:bg-red-600'
+                                        : 'text-blue-400 hover:text-blue-300 hover:bg-blue-900/30'
+                                        }`}
                                     title={isListening ? 'Stop listening' : 'Speak your message'}
                                 >
                                     {isListening ? (
@@ -1164,21 +1162,20 @@ export default function DisputeDetail() {
                                         <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
                                     )}
                                 </button>
-                                
-                                <input 
-                                    type="text" 
-                                    value={newMessage} 
-                                    onChange={handleMessageChange} 
-                                    placeholder={isListening ? "Speak now..." : "Type or speak your message..."} 
-                                    className={`flex-1 px-4 py-2.5 text-sm border rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/50 text-blue-100 placeholder-blue-500 transition-colors ${
-                                        isListening 
-                                            ? 'border-red-500/50 ring-1 ring-red-500/30' 
-                                            : 'border-blue-800'
-                                    }`}
+
+                                <input
+                                    type="text"
+                                    value={newMessage}
+                                    onChange={handleMessageChange}
+                                    placeholder={isListening ? "Speak now..." : "Type or speak your message..."}
+                                    className={`flex-1 px-4 py-2.5 text-sm border rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/50 text-blue-100 placeholder-blue-500 transition-colors ${isListening
+                                        ? 'border-red-500/50 ring-1 ring-red-500/30'
+                                        : 'border-blue-800'
+                                        }`}
                                 />
-                                
-                                <button 
-                                    type="submit" 
+
+                                <button
+                                    type="submit"
                                     disabled={!newMessage.trim() && !attachment}
                                     className="p-1.5 sm:p-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-full hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
                                 >
@@ -1193,11 +1190,11 @@ export default function DisputeDetail() {
 
             {/* Attachment Preview Modal */}
             {previewAttachment && (
-                <div 
+                <div
                     className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
                     onClick={() => setPreviewAttachment(null)}
                 >
-                    <div 
+                    <div
                         className="relative max-w-4xl max-h-[90vh] w-full bg-slate-900 rounded-lg overflow-hidden border border-blue-800"
                         onClick={(e) => e.stopPropagation()}
                     >
@@ -1228,12 +1225,12 @@ export default function DisputeDetail() {
                                 </button>
                             </div>
                         </div>
-                        
+
                         {/* Content */}
                         <div className="p-4 flex items-center justify-center overflow-auto max-h-[calc(90vh-60px)]">
                             {previewAttachment.type === 'image' && (
-                                <img 
-                                    src={previewAttachment.url} 
+                                <img
+                                    src={previewAttachment.url}
                                     alt={previewAttachment.name}
                                     className="max-w-full max-h-[70vh] object-contain rounded"
                                 />
@@ -1295,6 +1292,41 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
     const sigPad = useRef({});
     const [loading, setLoading] = useState(false);
 
+    // Resolution Progress Logic
+    const steps = [
+        { label: 'Verify Details', description: 'Confirm your personal information' },
+        { label: 'Digital Signature', description: 'Sign the resolution agreement' },
+        { label: 'Admin Review', description: 'Final compliance check' },
+        { label: 'Resolved', description: 'Case closed and agreement generated' }
+    ];
+
+    let currentStep = 0;
+    if (dispute.status === 'Resolved') currentStep = 4;
+    else if (dispute.status === 'PendingAdminApproval' || dispute.resolutionStatus === 'AdminReview') currentStep = 2;
+    else if (dispute.plaintiffSignature && dispute.respondentSignature) currentStep = 2;
+    else if (dispute.plaintiffVerified && dispute.respondentVerified) currentStep = 1;
+    else currentStep = 0;
+
+    // View state logic
+    // If case is resolved and not viewed yet -> Expanded.
+    // If case is resolved and viewed -> Compact.
+    // If case is in progress -> Always Compact (or Expanded? Requirement says "Full steps only on first visit").
+    // Let's default to Compact for in-progress to be non-intrusive, unless it's the very first time? 
+    // Actually, distinct phases usually benefit from specific focus. The user wants to "reduce clutter".
+    // I'll use the resolutionViewed flag as the main driver.
+    const [isCompact, setIsCompact] = useState(dispute.resolutionViewed);
+
+    const handleToggleExpand = () => setIsCompact(!isCompact);
+
+    // Mark as viewed if Resolved and not yet marked
+    useEffect(() => {
+        if (dispute.status === 'Resolved' && !dispute.resolutionViewed) {
+            // Mark as viewed in backend so next visit is compact
+            api.post(`/disputes/${dispute.id}/resolution-viewed`).catch(err => console.error('Failed to mark resolution viewed', err));
+        }
+    }, [dispute.status, dispute.resolutionViewed, dispute.id]);
+
+
     // Determine current user's role status
     const verified = isPlaintiff ? dispute.plaintiffVerified : isDefendant ? dispute.respondentVerified : true;
     const signed = isPlaintiff ? dispute.plaintiffSignature : isDefendant ? dispute.respondentSignature : true;
@@ -1303,7 +1335,15 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
     if (isAdmin) {
         return (
             <div className="bg-slate-800/50 p-6 rounded-lg border border-blue-800 mb-6">
-                <h3 className="text-xl font-bold text-blue-100 mb-4 flex items-center">
+                <ResolutionProgress
+                    steps={steps}
+                    currentStep={currentStep}
+                    isCompact={isCompact}
+                    onToggleExpand={handleToggleExpand}
+                />
+
+
+                <h3 className="text-xl font-bold text-blue-100 mb-4 flex items-center mt-4">
                     <Shield className="w-6 h-6 mr-2 text-blue-400" /> Administrative Review
                 </h3>
                 <div className="space-y-4">
@@ -1418,53 +1458,58 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
 
     return (
         <div className="bg-slate-800/50 p-6 rounded-lg border border-blue-800 mb-6">
-            <h3 className="text-xl font-bold text-blue-100 mb-6 flex items-center border-b border-blue-800 pb-2">
-                <FileText className="w-6 h-6 mr-2 text-blue-400" /> Resolution Workflow
-            </h3>
+            <ResolutionProgress
+                steps={steps}
+                currentStep={currentStep}
+                isCompact={isCompact}
+                onToggleExpand={handleToggleExpand}
+            />
 
-            <div className="space-y-8">
+            <div className="space-y-8 mt-6">
                 {/* Step 1: Verification */}
-                <div className="flex items-start">
-                    <div className={`p-2 rounded-full mr-4 ${verified ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                        {verified ? <CheckCircle className="w-6 h-6" /> : <Users className="w-6 h-6" />}
+                {(!isCompact || !verified) && (
+                    <div className="flex items-start">
+                        <div className={`p-2 rounded-full mr-4 ${verified ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                            {verified ? <CheckCircle className="w-6 h-6" /> : <Users className="w-6 h-6" />}
+                        </div>
+                        <div className="flex-1">
+                            <h4 className={`font-semibold text-lg flex items-center gap-2 ${verified ? 'text-green-400' : 'text-blue-100'}`}>
+                                Step 1: Confirm Personal Details
+                                {verified && <CheckCircle className="w-5 h-5 text-green-400" />}
+                            </h4>
+
+                            {!verified && (
+                                <>
+                                    <p className="text-sm text-blue-200 mb-4">Please verify that your details below are correct for the legal agreement.</p>
+
+                                    <div className="bg-slate-900/50 p-4 rounded-md border border-blue-800 grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4 max-w-lg">
+                                        <span className="text-blue-300">Full Name:</span>
+                                        <span className="font-medium text-blue-100">{myDetails.name}</span>
+
+                                        <span className="text-blue-300">Email:</span>
+                                        <span className="font-medium text-blue-100">{myDetails.email}</span>
+
+                                        <span className="text-blue-300">Phone:</span>
+                                        <span className="font-medium text-blue-100">{myDetails.phone}</span>
+
+                                        <span className="text-blue-300">Occupation:</span>
+                                        <span className="font-medium text-blue-100">{myDetails.occupation}</span>
+
+                                        <span className="text-blue-300">Address:</span>
+                                        <span className="font-medium text-blue-100">{myDetails.address}</span>
+                                    </div>
+
+                                    <button onClick={confirmDetails} className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium">
+                                        Confirm These Details Are Correct
+                                    </button>
+                                </>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex-1">
-                        <h4 className={`font-semibold text-lg flex items-center gap-2 ${verified ? 'text-green-400' : 'text-blue-100'}`}>
-                            Step 1: Confirm Personal Details
-                            {verified && <CheckCircle className="w-5 h-5 text-green-400" />}
-                        </h4>
-                        
-                        {!verified && (
-                            <>
-                                <p className="text-sm text-blue-200 mb-4">Please verify that your details below are correct for the legal agreement.</p>
-
-                                <div className="bg-slate-900/50 p-4 rounded-md border border-blue-800 grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4 max-w-lg">
-                                    <span className="text-blue-300">Full Name:</span>
-                                    <span className="font-medium text-blue-100">{myDetails.name}</span>
-
-                                    <span className="text-blue-300">Email:</span>
-                                    <span className="font-medium text-blue-100">{myDetails.email}</span>
-
-                                    <span className="text-blue-300">Phone:</span>
-                                    <span className="font-medium text-blue-100">{myDetails.phone}</span>
-
-                                    <span className="text-blue-300">Occupation:</span>
-                                    <span className="font-medium text-blue-100">{myDetails.occupation}</span>
-
-                                    <span className="text-blue-300">Address:</span>
-                                    <span className="font-medium text-blue-100">{myDetails.address}</span>
-                                </div>
-
-                                <button onClick={confirmDetails} className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded hover:from-blue-700 hover:to-indigo-700 font-medium">
-                                    Confirm These Details Are Correct
-                                </button>
-                            </>
-                        )}
-                    </div>
-                </div>
+                )}
 
                 {/* Step 2: Signature */}
-                {verified && (
+                {verified && (!isCompact || !signed) && (
                     <div className="flex items-start">
                         <div className={`p-2 rounded-full mr-4 ${signed ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
                             {signed ? <CheckCircle className="w-6 h-6" /> : <PenTool className="w-6 h-6" />}
