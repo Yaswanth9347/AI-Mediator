@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createDispute } from '../api';
-import { Upload, Loader2, Scale } from 'lucide-react';
+import { createDispute, verifyGovtId } from '../api';
+import { Upload, Loader2, Scale, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import PaymentModal from '../components/PaymentModal';
 
@@ -30,6 +30,42 @@ export default function NewDispute() {
     const [description, setDescription] = useState('');
     const [evidenceFile, setEvidenceFile] = useState(null);
     const [idCardFile, setIdCardFile] = useState(null);
+    const [verificationStatus, setVerificationStatus] = useState('idle'); // idle, verifying, verified, rejected
+    const [verifiedData, setVerifiedData] = useState(null);
+    const [verificationError, setVerificationError] = useState(null);
+
+    const handleIdUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setIdCardFile(file);
+        setVerificationStatus('verifying');
+        setVerificationError(null);
+        setVerifiedData(null);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await verifyGovtId(formData);
+            const data = res.data;
+
+            if (data.status === 'verified') {
+                setVerificationStatus('verified');
+                setVerifiedData(data);
+                toast.success(`ID Verified: ${data.detected_document_type}`);
+            } else {
+                setVerificationStatus('rejected');
+                setVerifiedData(data); // Contains failure reason
+                toast.error(`Verification Failed: ${data.failure_reason}`);
+            }
+        } catch (error) {
+            console.error(error);
+            setVerificationStatus('error');
+            setVerificationError('Failed to connect to verification service.');
+            toast.error('Identity check failed to run.');
+        }
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -114,14 +150,67 @@ export default function NewDispute() {
                             <div>
                                 <label className={LabelClass}>Government ID *</label>
                                 <div className="mt-1 flex justify-center px-6 py-8 border border-blue-800 rounded-lg hover:border-blue-600 transition-colors bg-slate-900/30">
-                                    <div className="text-center">
-                                        <Upload className="mx-auto h-8 w-8 text-blue-400 mb-3" />
-                                        <label className="cursor-pointer text-sm text-blue-300 hover:text-blue-200 transition-colors">
-                                            <span>Upload ID Card</span>
-                                            <input type="file" required className="sr-only" onChange={e => setIdCardFile(e.target.files[0])} accept="image/*" />
-                                        </label>
-                                        <p className="text-xs text-blue-500 mt-2">PNG, JPG up to 10MB</p>
-                                        {idCardFile && <p className="text-sm text-green-400 font-medium mt-3">{idCardFile.name}</p>}
+                                    <div className="text-center w-full">
+                                        {verificationStatus === 'verifying' ? (
+                                            <div className="py-2">
+                                                <Loader2 className="animate-spin h-8 w-8 text-blue-400 mx-auto mb-2" />
+                                                <p className="text-sm text-blue-300">Verifying Identity Document...</p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <Upload className="mx-auto h-8 w-8 text-blue-400 mb-3" />
+                                                <label className="cursor-pointer text-sm text-blue-300 hover:text-blue-200 transition-colors">
+                                                    <span>{idCardFile ? 'Change ID Card' : 'Upload ID Card'}</span>
+                                                    <input type="file" required className="sr-only" onChange={handleIdUpload} accept="image/*,application/pdf" />
+                                                </label>
+                                                <p className="text-xs text-blue-500 mt-2">PNG, JPG, PDF up to 10MB</p>
+
+                                                {/* Verification Results */}
+                                                {verificationStatus === 'verified' && (
+                                                    <div className="mt-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg flex items-start gap-3 text-left">
+                                                        <CheckCircle className="h-5 w-5 text-green-400 shrink-0 mt-0.5" />
+                                                        <div>
+                                                            <p className="text-sm font-medium text-green-400">Verified Successfully</p>
+                                                            <p className="text-xs text-green-300/80 mt-1">
+                                                                Type: <span className="uppercase">{verifiedData?.detected_document_type}</span>
+                                                            </p>
+                                                            {verifiedData?.extracted_fields?.id_number && (
+                                                                <p className="text-xs text-green-300/80">
+                                                                    ID: {verifiedData.extracted_fields.id_number}
+                                                                </p>
+                                                            )}
+                                                            <p className="text-xs text-green-300/60 mt-1">Confidence: {Math.round(verifiedData?.confidence_score * 100)}%</p>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {verificationStatus === 'rejected' && (
+                                                    <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-start gap-3 text-left">
+                                                        <XCircle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+                                                        <div>
+                                                            <p className="text-sm font-medium text-red-400">Verification Failed</p>
+                                                            <p className="text-xs text-red-300/80 mt-1">{verifiedData?.failure_reason}</p>
+                                                            <p className="text-xs text-red-300/60 mt-1">Please upload a clearer image or a valid Government ID.</p>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {verificationStatus === 'error' && (
+                                                    <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-start gap-3 text-left">
+                                                        <AlertTriangle className="h-5 w-5 text-yellow-400 shrink-0 mt-0.5" />
+                                                        <div>
+                                                            <p className="text-sm font-medium text-yellow-400">Service Unavailable</p>
+                                                            <p className="text-xs text-yellow-300/80 mt-1">{verificationError}</p>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* File Name display if just selected but not processed (fallback) or if valid */}
+                                                {idCardFile && verificationStatus === 'idle' && (
+                                                    <p className="text-sm text-blue-400 font-medium mt-3">{idCardFile.name}</p>
+                                                )}
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>

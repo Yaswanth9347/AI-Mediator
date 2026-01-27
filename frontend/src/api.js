@@ -21,12 +21,12 @@ api.interceptors.response.use(
         // Handle 401 errors - redirect to login
         if (error.response?.status === 401) {
             const errorCode = error.response?.data?.code;
-            
+
             // Clear local storage for any auth error
             localStorage.removeItem('token');
             localStorage.removeItem('role');
             localStorage.removeItem('username');
-            
+
             // Show appropriate message based on error code
             if (errorCode === 'SESSION_INVALID') {
                 // Session was revoked or expired - show notification
@@ -34,7 +34,7 @@ api.interceptors.response.use(
             } else if (errorCode === 'TOKEN_EXPIRED') {
                 sessionStorage.setItem('sessionExpiredMessage', 'Your session has expired. Please log in again.');
             }
-            
+
             // Redirect to login if not already there
             if (!window.location.pathname.includes('/login')) {
                 window.location.href = '/login';
@@ -43,7 +43,7 @@ api.interceptors.response.use(
         }
 
         // Capture significant errors to Sentry
-        const shouldCapture = 
+        const shouldCapture =
             error.response?.status >= 500 || // Server errors
             !error.response ||                // Network errors
             error.code === 'ECONNABORTED' ||  // Timeout errors
@@ -83,7 +83,7 @@ export const createDispute = (formData) => api.post('/disputes', formData, {
 });
 export const updateDispute = (id, data) => api.put(`/disputes/${id}`, data);
 export const respondToDispute = (id, data) => api.post(`/disputes/${id}/respond`, data);
-export const acceptCase = (id) => api.post(`/disputes/${id}/accept`);
+export const acceptCase = (id, data) => api.post(`/disputes/${id}/accept`, data);
 export const getMessages = (id, params) => api.get(`/disputes/${id}/messages`, { params });
 export const sendMessage = (id, formData) => api.post(`/disputes/${id}/messages`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
@@ -141,13 +141,18 @@ export const deleteEvidence = (disputeId, evidenceId) => api.delete(`/disputes/$
 export const downloadEvidence = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}/download`, {
     responseType: 'blob'
 });
-export const getEvidencePreviewUrl = (disputeId, evidenceId) => 
+export const getEvidencePreviewUrl = (disputeId, evidenceId) =>
     `http://localhost:5000/api/disputes/${disputeId}/evidence/${evidenceId}/preview`;
 
 // OCR APIs
 export const getEvidenceOcr = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}/ocr`);
 export const processEvidenceOcr = (disputeId, evidenceId) => api.post(`/disputes/${disputeId}/evidence/${evidenceId}/ocr`);
 export const processAllOcr = (disputeId) => api.post(`/disputes/${disputeId}/ocr/process-all`);
+
+// External OCR Service
+export const verifyGovtId = (formData) => api.post('/external/ocr/verify', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+});
 
 // Notification APIs
 export const getNotifications = (params) => api.get('/notifications', { params });
@@ -175,8 +180,8 @@ export const uploadProfilePicture = (formData) => api.post('/users/profile-pictu
     headers: { 'Content-Type': 'multipart/form-data' },
 });
 export const deleteProfilePicture = () => api.delete('/users/profile-picture');
-export const getActivityLogs = (page = 1, limit = 20, category = 'all') => api.get('/users/activity-logs', { 
-    params: { page, limit, category } 
+export const getActivityLogs = (page = 1, limit = 20, category = 'all') => api.get('/users/activity-logs', {
+    params: { page, limit, category }
 });
 export const updatePrivacySettings = (settings) => api.put('/users/privacy-settings', settings);
 export const enable2FA = () => api.post('/users/enable-2fa');

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl, getUserProfile } from '../api';
+import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl, getStats, verifyGovtId } from '../api';
 import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown, File, Image, FileAudio, Video, Eye, Mic, MicOff } from 'lucide-react';
 import SignatureCanvas from 'react-signature-canvas';
 import toast from 'react-hot-toast';
@@ -544,9 +544,52 @@ export default function DisputeDetail() {
         };
     }, []);
 
-    const handleAcceptCase = async () => {
+    const handleIdUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Reset states
+        setIdVerificationStatus('verifying');
+        setVerificationError(null);
+        setIdVerificationResult(null);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
         try {
-            await acceptCase(id);
+            const res = await verifyGovtId(formData);
+
+            if (res.data.verified) {
+                setIdVerificationStatus('verified');
+                setIdVerificationResult(res.data);
+                toast.success('Identity verified successfully!');
+            } else {
+                setIdVerificationStatus('rejected');
+                setVerificationError(res.data.error || 'Verification failed. Please try a clearer image.');
+                toast.error('Identity verification failed');
+            }
+        } catch (err) {
+            console.error('ID Verification Error:', err);
+            setIdVerificationStatus('error');
+            setVerificationError('Server error during verification. Please try again.');
+            toast.error('Verification service error');
+        }
+    };
+
+    const handleAcceptCase = async () => {
+        // Enforce verification for defendant
+        if (isDefendant && idVerificationStatus !== 'verified') {
+            toast.error('Please verify your identity before accepting the case.');
+            return;
+        }
+
+        try {
+            const acceptData = {
+                respondentIdVerified: idVerificationStatus === 'verified',
+                respondentIdData: idVerificationResult
+            };
+
+            await acceptCase(id, acceptData);
             toast.success('You accepted the case.');
             acknowledgeAction(id, 'dispute'); // Clear "New Dispute" notification if exists
             fetchData();
@@ -748,15 +791,80 @@ export default function DisputeDetail() {
                     <p className="text-sm text-blue-100">{dispute.description}</p>
                 </div>
 
-                {/* Accept Case Banner */}
+                {/* Accept Case Banner with Verification */}
                 {isDefendant && !dispute.respondentAccepted && !dispute.forwardedToCourt && (
-                    <div className="p-4 bg-blue-950/30 border-b border-blue-800 flex items-center justify-between">
-                        <div>
-                            <p className="font-semibold text-blue-200">Accept to participate in this case</p>
+                    <div className="p-6 bg-slate-900/50 border-b border-blue-800">
+                        <div className="mb-4">
+                            <h3 className="text-lg font-bold text-blue-100 mb-2">Accept Case Logic</h3>
+                            <p className="text-sm text-blue-300">
+                                To ensure fairness and security, you must verify your identity before participating in this dispute.
+                            </p>
                         </div>
-                        <button onClick={handleAcceptCase} className="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 flex items-center">
-                            <CheckCircle className="w-4 h-4 mr-2" /> Accept Case
-                        </button>
+
+                        <div className="flex flex-col md:flex-row items-center gap-6">
+                            {/* Verification Status Card */}
+                            <div className={`flex-1 w-full p-4 rounded-lg border ${idVerificationStatus === 'verified' ? 'bg-green-500/10 border-green-500/50' :
+                                    idVerificationStatus === 'rejected' || idVerificationStatus === 'error' ? 'bg-red-500/10 border-red-500/50' :
+                                        'bg-slate-800 border-blue-800'
+                                }`}>
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-sm font-semibold text-blue-200">Identity Verification</span>
+                                    {idVerificationStatus === 'verifying' && <span className="text-xs text-blue-400 animate-pulse">Verifying...</span>}
+                                    {idVerificationStatus === 'verified' && <span className="text-xs text-green-400 font-bold">✓ Verified</span>}
+                                </div>
+
+                                {idVerificationStatus === 'idle' && (
+                                    <div className="text-center py-2">
+                                        <p className="text-xs text-blue-400 mb-3">Please upload your Government ID (Aadhaar/PAN/Driving License)</p>
+                                        <label className="cursor-pointer inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors">
+                                            <input type="file" className="hidden" accept="image/*" onChange={handleIdUpload} />
+                                            Upload ID Card
+                                        </label>
+                                    </div>
+                                )}
+
+                                {idVerificationStatus === 'verifying' && (
+                                    <div className="flex justify-center py-4">
+                                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                                    </div>
+                                )}
+
+                                {idVerificationStatus === 'verified' && (
+                                    <div className="text-sm">
+                                        <p className="text-green-300 mb-1"><strong>Name:</strong> {idVerificationResult?.details?.name || 'Verified Person'}</p>
+                                        <p className="text-green-300"><strong>ID No:</strong> {idVerificationResult?.details?.idNumber || 'Create'}</p>
+                                    </div>
+                                )}
+
+                                {(idVerificationStatus === 'rejected' || idVerificationStatus === 'error') && (
+                                    <div className="text-center py-2">
+                                        <p className="text-xs text-red-400 mb-2">{verificationError}</p>
+                                        <label className="cursor-pointer text-xs text-blue-400 hover:underline">
+                                            <input type="file" className="hidden" accept="image/*" onChange={handleIdUpload} />
+                                            Try Again
+                                        </label>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Action Button */}
+                            <div className="shrink-0">
+                                <button
+                                    onClick={handleAcceptCase}
+                                    disabled={idVerificationStatus !== 'verified'}
+                                    className={`px-8 py-3 rounded-lg font-bold flex items-center transition-all ${idVerificationStatus === 'verified'
+                                            ? 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-lg shadow-green-900/20'
+                                            : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                                        }`}
+                                >
+                                    <CheckCircle className="w-5 h-5 mr-2" />
+                                    Accept Case
+                                </button>
+                                {idVerificationStatus !== 'verified' && (
+                                    <p className="text-xs text-center text-slate-500 mt-2">Verification required</p>
+                                )}
+                            </div>
+                        </div>
                     </div>
                 )}
 

@@ -11,6 +11,22 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# Start OCR Service
+echo "📄 Starting OCR Service..."
+cd OCR
+# Check if OCR container already exists
+if docker ps -a --format '{{.Names}}' | grep -q "^ocr_service$"; then
+    if docker ps --format '{{.Names}}' | grep -q "^ocr_service$"; then
+        echo "✅ OCR Service is already running"
+    else
+        echo "🔄 Starting existing OCR Service..."
+        docker start ocr_service
+    fi
+else
+    docker compose up -d
+fi
+cd ..
+
 # Start PostgreSQL database
 echo "📦 Starting PostgreSQL database..."
 cd "$(dirname "$0")"
@@ -80,6 +96,7 @@ echo ""
 echo "🎉 MediaAI is running!"
 echo "   Frontend: http://localhost:5173"
 echo "   Backend:  http://localhost:5000"
+echo "   OCR Service: http://localhost:8000"
 echo "   Database: localhost:5432"
 echo ""
 echo "Press Ctrl+C to stop all services"

@@ -21,14 +21,14 @@ if (SENTRY_ENABLED && SENTRY_DSN) {
         blockAllMedia: true,
       }),
     ],
-    
+
     // Performance Monitoring
     tracesSampleRate: ENVIRONMENT === 'production' ? 0.1 : 1.0,
-    
+
     // Session Replay
     replaysSessionSampleRate: 0.1,
     replaysOnErrorSampleRate: 1.0,
-    
+
     // Ignore certain errors
     ignoreErrors: [
       'ResizeObserver loop limit exceeded',
@@ -36,11 +36,11 @@ if (SENTRY_ENABLED && SENTRY_DSN) {
       'Network Error',
       'Failed to fetch'
     ],
-    
+
     beforeSend(event, hint) {
       // Extra guard: never send if not enabled
       if (!SENTRY_ENABLED) return null;
-      
+
       // Filter out sensitive data
       if (event.request) {
         delete event.request.cookies;
@@ -48,14 +48,11 @@ if (SENTRY_ENABLED && SENTRY_DSN) {
           delete event.request.headers.authorization;
         }
       }
-      
+
       return event;
     }
   });
-  
-  console.log('✅ Sentry initialized for frontend');
-} else {
-  console.warn('⚠️  Sentry disabled (no DSN or not enabled).');
+
 }
 
 createRoot(document.getElementById('root')).render(

@@ -400,7 +400,6 @@ async function processEvidenceOcr(evidenceId) {
     }
 }
 
-// ==================== END OCR SERVICE ====================
 
 // Make io accessible in routes
 app.set('io', io);
@@ -601,6 +600,8 @@ const Dispute = sequelize.define('dispute', {
     resolutionStatus: { type: DataTypes.STRING, defaultValue: 'None' }, // None, InProgress, Signed, AdminReview, Finalized
     plaintiffVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
     respondentVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
+    respondentIdVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
+    respondentIdData: { type: DataTypes.TEXT }, // JSON string of verification data
     plaintiffSignature: { type: DataTypes.STRING }, // Path to sig image
     respondentSignature: { type: DataTypes.STRING }, // Path to sig image
     agreementDocPath: { type: DataTypes.STRING },
@@ -1819,6 +1820,57 @@ const authMiddlewareForMedia = async (req, res, next) => {
         return res.status(401).json({ error: 'Invalid token', code: 'TOKEN_INVALID' });
     }
 };
+
+// ==================== EXTERNAL OCR SERVICE PROXY ====================
+
+// Proxy to Python OCR Microservice
+app.post('/api/external/ocr/verify', authMiddleware, uploadEvidence.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        const OCR_SERVICE_URL = 'http://localhost:8000/api/v1/document/verify';
+
+        // Prepare FormData for the external service
+        const formData = new FormData();
+
+        // Read file from disk (since multer saved it)
+        const fileBuffer = fs.readFileSync(req.file.path);
+        const fileBlob = new Blob([fileBuffer], { type: req.file.mimetype });
+
+        formData.append('file', fileBlob, req.file.originalname);
+
+        // Forward request to OCR Service
+        console.log(`🔄 Proxying OCR request to ${OCR_SERVICE_URL}...`);
+        const response = await fetch(OCR_SERVICE_URL, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ OCR Service Error:', errorText);
+            return res.status(response.status).json({ error: 'OCR Service failed', details: errorText });
+        }
+
+        const data = await response.json();
+        console.log('✅ OCR Service Response:', data);
+
+        // Clean up uploaded file from temp storage
+        try {
+            fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+            console.error('⚠️ Failed to delete temp file:', cleanupError);
+        }
+
+        res.json(data);
+
+    } catch (error) {
+        console.error('❌ OCR Proxy Error:', error);
+        res.status(500).json({ error: 'Internal Server Error', details: error.message });
+    }
+});
 
 app.get('/api/stats', authMiddleware, async (req, res) => {
     try {
@@ -4843,6 +4895,18 @@ app.post('/api/disputes/:id/accept', authMiddleware, async (req, res) => {
         dispute.respondentId = req.user.id;
         dispute.respondentAccepted = true;
         dispute.status = 'Active';
+
+        // Save verification data if provided
+        if (req.body.respondentIdVerified) {
+            dispute.respondentIdVerified = true;
+            try {
+                dispute.respondentIdData = JSON.stringify(req.body.respondentIdData || {});
+            } catch (e) {
+                console.error("Error parsing verification data:", e);
+                dispute.respondentIdData = "{}";
+            }
+        }
+
         await dispute.save();
 
         // Audit log: Case accepted
