@@ -1,8 +1,10 @@
 import axios from 'axios';
 import * as Sentry from '@sentry/react';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const api = axios.create({
-    baseURL: 'http://localhost:5000/api',
+    baseURL: API_URL,
 });
 
 
@@ -142,7 +144,7 @@ export const downloadEvidence = (disputeId, evidenceId) => api.get(`/disputes/${
     responseType: 'blob'
 });
 export const getEvidencePreviewUrl = (disputeId, evidenceId) =>
-    `http://localhost:5000/api/disputes/${disputeId}/evidence/${evidenceId}/preview`;
+    `${API_URL}/disputes/${disputeId}/evidence/${evidenceId}/preview`;
 
 // OCR APIs
 export const getEvidenceOcr = (disputeId, evidenceId) => api.get(`/disputes/${disputeId}/evidence/${evidenceId}/ocr`);
@@ -198,7 +200,7 @@ export const downloadAgreementPDF = (disputeId) => api.get(`/disputes/${disputeI
 });
 export const getAgreementPreviewUrl = (disputeId) => {
     const token = localStorage.getItem('token');
-    return `http://localhost:5000/api/disputes/${disputeId}/report/agreement/preview?token=${encodeURIComponent(token)}`;
+    return `${API_URL}/disputes/${disputeId}/report/agreement/preview?token=${encodeURIComponent(token)}`;
 };
 
 export default api;

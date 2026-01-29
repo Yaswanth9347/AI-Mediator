@@ -60,3 +60,7 @@ secrets/
 
 # Docker volumes (if any local data)
 docker-data/
+
+# Uploads (user uploaded files)
+uploads/
+**/uploads/

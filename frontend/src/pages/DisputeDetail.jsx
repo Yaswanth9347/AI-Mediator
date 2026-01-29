@@ -554,7 +554,7 @@ export default function DisputeDetail() {
         setIdVerificationResult(null);
 
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('idDocument', file);
 
         try {
             const res = await verifyGovtId(formData);
@@ -804,8 +804,8 @@ export default function DisputeDetail() {
                         <div className="flex flex-col md:flex-row items-center gap-6">
                             {/* Verification Status Card */}
                             <div className={`flex-1 w-full p-4 rounded-lg border ${idVerificationStatus === 'verified' ? 'bg-green-500/10 border-green-500/50' :
-                                    idVerificationStatus === 'rejected' || idVerificationStatus === 'error' ? 'bg-red-500/10 border-red-500/50' :
-                                        'bg-slate-800 border-blue-800'
+                                idVerificationStatus === 'rejected' || idVerificationStatus === 'error' ? 'bg-red-500/10 border-red-500/50' :
+                                    'bg-slate-800 border-blue-800'
                                 }`}>
                                 <div className="flex items-center justify-between mb-2">
                                     <span className="text-sm font-semibold text-blue-200">Identity Verification</span>
@@ -853,8 +853,8 @@ export default function DisputeDetail() {
                                     onClick={handleAcceptCase}
                                     disabled={idVerificationStatus !== 'verified'}
                                     className={`px-8 py-3 rounded-lg font-bold flex items-center transition-all ${idVerificationStatus === 'verified'
-                                            ? 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-lg shadow-green-900/20'
-                                            : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                                        ? 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-lg shadow-green-900/20'
+                                        : 'bg-slate-700 text-slate-400 cursor-not-allowed'
                                         }`}
                                 >
                                     <CheckCircle className="w-5 h-5 mr-2" />

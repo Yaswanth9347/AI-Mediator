@@ -44,7 +44,7 @@ export default function NewDispute() {
         setVerifiedData(null);
 
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('idDocument', file);
 
         try {
             const res = await verifyGovtId(formData);

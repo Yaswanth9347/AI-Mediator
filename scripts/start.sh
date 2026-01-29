@@ -3,7 +3,12 @@
 # MediaAI Startup Script
 # This script ensures the database and backend server are running before starting the frontend
 
+# Set the project root directory (parent of scripts folder)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 echo "🚀 Starting MediaAI Application..."
+echo "   Project root: $PROJECT_ROOT"
 
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
@@ -13,23 +18,29 @@ fi
 
 # Start OCR Service
 echo "📄 Starting OCR Service..."
-cd OCR
-# Check if OCR container already exists
-if docker ps -a --format '{{.Names}}' | grep -q "^ocr_service$"; then
-    if docker ps --format '{{.Names}}' | grep -q "^ocr_service$"; then
-        echo "✅ OCR Service is already running"
+OCR_DIR="$PROJECT_ROOT/services/ocr-service"
+if [ -d "$OCR_DIR" ]; then
+    cd "$OCR_DIR"
+    # Check if OCR container already exists
+    if docker ps -a --format '{{.Names}}' | grep -q "^ocr_service$"; then
+        if docker ps --format '{{.Names}}' | grep -q "^ocr_service$"; then
+            echo "✅ OCR Service is already running"
+        else
+            echo "🔄 Starting existing OCR Service..."
+            docker start ocr_service
+        fi
     else
-        echo "🔄 Starting existing OCR Service..."
-        docker start ocr_service
+        docker compose up -d
     fi
 else
-    docker compose up -d
+    echo "⚠️  OCR Service directory not found at $OCR_DIR"
 fi
-cd ..
+
+# Go back to project root
+cd "$PROJECT_ROOT"
 
 # Start PostgreSQL database
 echo "📦 Starting PostgreSQL database..."
-cd "$(dirname "$0")"
 
 # Check if container already exists
 if docker ps -a --format '{{.Names}}' | grep -q "^dispute-postgres$"; then
@@ -65,7 +76,7 @@ if lsof -i :5000 -sTCP:LISTEN -t > /dev/null 2>&1; then
     echo "⚠️  Port 5000 already in use — skipping backend start"
     echo "✅ Backend server appears to be running on http://localhost:5000"
 else
-    cd backend
+    cd "$PROJECT_ROOT/backend"
     npm run dev &
     BACKEND_PID=$!
 
@@ -84,12 +95,14 @@ else
     fi
 
     echo "✅ Backend server is running on http://localhost:5000"
-    cd ..
 fi
+
+# Go back to project root
+cd "$PROJECT_ROOT"
 
 # Start frontend
 echo "🎨 Starting frontend..."
-cd frontend
+cd "$PROJECT_ROOT/frontend"
 npm run dev
 
 echo ""

@@ -25,21 +25,36 @@ export const NotificationProvider = ({ children }) => {
     // Load initial state from local storage or API
     useEffect(() => {
         const loadNotifications = async () => {
+            // Only fetch if user is authenticated
+            const token = localStorage.getItem('token');
+            if (!token) {
+                // User not logged in, just load from cache if available
+                loadFromCache();
+                setLoading(false);
+                return;
+            }
+
             if (navigator.onLine) {
                 try {
                     setLoading(true);
                     const response = await getNotifications({ limit: 50 });
                     // Deduplicate with existing local storage if any? 
                     // For now, trusting API as source of truth when online
-                    setNotifications(response.data.notifications || []);
+                    setNotifications(response.data.notifications || response.data || []);
                     setUnreadCount(response.data.unreadCount || 0);
 
                     // Cache to local storage
-                    localStorage.setItem('cached_notifications', JSON.stringify(response.data.notifications || []));
+                    localStorage.setItem('cached_notifications', JSON.stringify(response.data.notifications || response.data || []));
                     localStorage.setItem('cached_unread_count', response.data.unreadCount || 0);
                 } catch (error) {
-                    console.error('Failed to fetch notifications:', error);
-                    loadFromCache();
+                    // If 401, user session expired - don't show error, just load cache
+                    if (error.response?.status === 401) {
+                        console.log('Session expired or user not authenticated');
+                        loadFromCache();
+                    } else {
+                        console.error('Failed to fetch notifications:', error);
+                        loadFromCache();
+                    }
                 } finally {
                     setLoading(false);
                 }
