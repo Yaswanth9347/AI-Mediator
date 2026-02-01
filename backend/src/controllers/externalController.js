@@ -29,7 +29,7 @@ export const verifyId = async (req, res) => {
         }
 
         console.log('✅ verifyId: File exists on disk, calling AI service...');
-        const result = await verifyDocumentIsID(req.file.path);
+        const result = await verifyDocumentIsID(req.file.path, req.file.mimetype);
         console.log('✅ verifyId: AI Service returned:', result);
 
         if (!result) {

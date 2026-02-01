@@ -153,6 +153,11 @@ runMigrations().then(async () => {
     await AuditLog.sync();
     await Notification.sync();
 
+    // Sync new AI feature models
+    const { ConversationSummary, LegalKnowledge } = await import('./models/index.js');
+    await ConversationSummary.sync();
+    await LegalKnowledge.sync();
+
 
     // Initialize Socket
     const io = initializeSocket(httpServer);
@@ -178,6 +183,15 @@ runMigrations().then(async () => {
         }
     } catch (e) {
         logError('Error seeding admin', { error: e.message });
+    }
+
+    // Seed legal knowledge base for RAG (runs only if empty)
+    try {
+        const { seedLegalKnowledge } = await import('./services/ragService.js');
+        await seedLegalKnowledge();
+        logInfo('Legal knowledge base initialized');
+    } catch (e) {
+        logError('Error seeding legal knowledge', { error: e.message });
     }
 
     await logAuditEvent({

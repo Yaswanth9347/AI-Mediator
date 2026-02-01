@@ -161,7 +161,7 @@ export default function NewDispute() {
                                                 <Upload className="mx-auto h-8 w-8 text-blue-400 mb-3" />
                                                 <label className="cursor-pointer text-sm text-blue-300 hover:text-blue-200 transition-colors">
                                                     <span>{idCardFile ? 'Change ID Card' : 'Upload ID Card'}</span>
-                                                    <input type="file" required className="sr-only" onChange={handleIdUpload} accept="image/*,application/pdf" />
+                                                    <input type="file" className="sr-only" onChange={handleIdUpload} accept="image/*,application/pdf" />
                                                 </label>
                                                 <p className="text-xs text-blue-500 mt-2">PNG, JPG, PDF up to 10MB</p>
 

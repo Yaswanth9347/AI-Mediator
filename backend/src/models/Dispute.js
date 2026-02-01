@@ -72,6 +72,37 @@ const Dispute = sequelize.define('dispute', {
     refundedAt: { type: DataTypes.DATE },
     refundAmount: { type: DataTypes.INTEGER }, // Amount refunded in cents
     refundReason: { type: DataTypes.TEXT },
+
+    // ========== STRUCTURED CASE PROFILE FIELDS ==========
+    // Category classification for dispute type
+    category: {
+        type: DataTypes.STRING,
+        defaultValue: 'other'
+    }, // 'consumer', 'property', 'contract', 'employment', 'financial', 'other'
+
+    // Monetary value if applicable (in smallest currency unit)
+    monetaryAmount: { type: DataTypes.DECIMAL(15, 2) },
+    monetaryCurrency: { type: DataTypes.STRING, defaultValue: 'INR' },
+
+    // Timeline of key events (JSON array)
+    timeline: { type: DataTypes.JSONB }, // [{date, event, description}]
+
+    // Severity assessment
+    severity: {
+        type: DataTypes.STRING,
+        defaultValue: 'medium'
+    }, // 'low', 'medium', 'high', 'critical'
+
+    // Extracted key issues (JSON array)
+    keyIssues: { type: DataTypes.JSONB }, // ['issue1', 'issue2', ...]
+
+    // Party positions summary (JSON object)
+    partiesAnalysis: { type: DataTypes.JSONB }, // {plaintiff: {position, claims}, defendant: {position, claims}}
+
+    // Profile generation tracking
+    caseProfileGenerated: { type: DataTypes.BOOLEAN, defaultValue: false },
+    caseProfileGeneratedAt: { type: DataTypes.DATE },
+    caseProfileVersion: { type: DataTypes.INTEGER, defaultValue: 0 },
 });
 
 export default Dispute;

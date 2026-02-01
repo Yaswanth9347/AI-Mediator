@@ -125,7 +125,7 @@ export const createDispute = async (req, res) => {
 // Respondent submits defense / accepts case
 export const respondToDispute = async (req, res) => {
     try {
-        const { defendantStatement } = req.body;
+        const { defendantStatement, respondentIdVerified, respondentIdData } = req.body;
         const dispute = await Dispute.findByPk(req.params.id);
 
         if (!dispute) return res.status(404).json({ error: 'Not found' });
@@ -141,6 +141,17 @@ export const respondToDispute = async (req, res) => {
         dispute.defendantStatement = defendantStatement;
         dispute.respondentAccepted = true;
         dispute.status = 'Active'; // Both parties are now in
+
+        // Save respondent ID verification data if provided
+        if (respondentIdVerified !== undefined) {
+            dispute.respondentIdVerified = respondentIdVerified;
+        }
+        if (respondentIdData) {
+            dispute.respondentIdData = typeof respondentIdData === 'string'
+                ? respondentIdData
+                : JSON.stringify(respondentIdData);
+        }
+
         await dispute.save();
 
         // Audit log: Dispute accepted
@@ -480,7 +491,9 @@ export const getEvidenceList = async (req, res) => {
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        const isParty = currentUser.email === dispute.plaintiffEmail || currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail ||
+            currentUser.email === dispute.respondentEmail ||
+            currentUser.id === dispute.creatorId;
         const isAdmin = req.user.role === 'Admin';
 
         if (!isParty && !isAdmin) return res.status(403).json({ error: 'Not authorized' });
@@ -522,7 +535,7 @@ export const downloadEvidence = async (req, res) => {
         const dispute = await Dispute.findByPk(req.params.id);
         const currentUser = await User.findByPk(req.user.id);
         const isAdmin = req.user.role === 'Admin';
-        const isParty = currentUser.email === dispute.plaintiffEmail || currentUser.email === dispute.respondentEmail;
+        const isParty = currentUser.email === dispute.plaintiffEmail || currentUser.email === dispute.respondentEmail || currentUser.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) return res.status(403).json({ error: 'Not authorized' });
 
@@ -655,7 +668,7 @@ export const submitDecision = async (req, res) => {
         await dispute.save();
 
         logAuditEvent({
-            action: AuditActions.SOLUTION_SELECT,
+            action: AuditActions.SOLUTION_VOTE,
             category: AuditCategories.RESOLUTION,
             user: { id: currentUser.id, email: currentUser.email },
             resourceType: 'DISPUTE',

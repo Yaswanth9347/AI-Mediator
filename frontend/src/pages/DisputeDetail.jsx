@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl, getStats, verifyGovtId } from '../api';
+import api, { getDispute, getMessages, sendMessage, acceptCase, submitDecision, getMessageCount, getCaseHistory, downloadCaseSummaryReport, downloadAgreementPDF, getAgreementPreviewUrl, getStats, verifyGovtId, getUserProfile } from '../api';
 import { ArrowLeft, Send, Paperclip, CheckCircle, XCircle, User, Users, MessageCircle, Scale, AlertTriangle, Building, Clock, Shield, FileText, PenTool, Download, RefreshCw, X, ChevronDown, File, Image, FileAudio, Video, Eye, Mic, MicOff } from 'lucide-react';
 import SignatureCanvas from 'react-signature-canvas';
 import toast from 'react-hot-toast';
@@ -73,6 +73,11 @@ export default function DisputeDetail() {
     const { acknowledgeAction } = useNotifications();
     const [typingUsers, setTypingUsers] = useState(new Set());
     const typingTimeoutRef = useRef(null);
+
+    // ID Verification state for defendant acceptance
+    const [idVerificationStatus, setIdVerificationStatus] = useState('idle'); // idle, verifying, verified, rejected, error
+    const [idVerificationResult, setIdVerificationResult] = useState(null);
+    const [verificationError, setVerificationError] = useState(null);
 
     const currentUserEmail = localStorage.getItem('userEmail');
     const currentUsername = localStorage.getItem('username');
@@ -558,15 +563,16 @@ export default function DisputeDetail() {
 
         try {
             const res = await verifyGovtId(formData);
+            const data = res.data;
 
-            if (res.data.verified) {
+            if (data.status === 'verified') {
                 setIdVerificationStatus('verified');
-                setIdVerificationResult(res.data);
-                toast.success('Identity verified successfully!');
+                setIdVerificationResult(data);
+                toast.success(`Identity verified: ${data.detected_document_type || 'Government ID'}`);
             } else {
                 setIdVerificationStatus('rejected');
-                setVerificationError(res.data.error || 'Verification failed. Please try a clearer image.');
-                toast.error('Identity verification failed');
+                setVerificationError(data.failure_reason || data.error || 'Verification failed. Please try a clearer image.');
+                toast.error(`Verification failed: ${data.failure_reason || 'Invalid document'}`);
             }
         } catch (err) {
             console.error('ID Verification Error:', err);
@@ -817,7 +823,7 @@ export default function DisputeDetail() {
                                     <div className="text-center py-2">
                                         <p className="text-xs text-blue-400 mb-3">Please upload your Government ID (Aadhaar/PAN/Driving License)</p>
                                         <label className="cursor-pointer inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors">
-                                            <input type="file" className="hidden" accept="image/*" onChange={handleIdUpload} />
+                                            <input type="file" className="hidden" accept="image/*,application/pdf" onChange={handleIdUpload} />
                                             Upload ID Card
                                         </label>
                                     </div>
@@ -1078,16 +1084,25 @@ export default function DisputeDetail() {
 
                         {messages.length === 0 ? <p className="text-center text-blue-300 py-10 text-sm">Start the conversation</p> :
                             messages.map((msg) => {
-                                // Alignment logic:
-                                // - For plaintiff: own messages on right, defendant on left
-                                // - For defendant: own messages on right, plaintiff on left  
-                                // - For admin: show plaintiff's view (plaintiff on right, defendant on left)
-                                const isOwnMessage = isAdmin
-                                    ? msg.senderRole === 'plaintiff'  // Admin sees plaintiff's perspective
-                                    : String(msg.senderId) === String(currentUserIdResolved);
-                                // Keep role label display
+                                // Alignment logic based on role:
+                                // - For plaintiff: plaintiff messages on RIGHT, defendant messages on LEFT
+                                // - For defendant: defendant messages on RIGHT, plaintiff messages on LEFT
+                                // - For admin: plaintiff on RIGHT, defendant on LEFT (same as plaintiff view)
                                 const isPlaintiffMessage = msg.senderRole === 'plaintiff';
                                 const isDefendantMessage = msg.senderRole === 'defendant';
+
+                                // Determine if message should be on right side
+                                let isOwnMessage;
+                                if (isAdmin || isPlaintiff) {
+                                    // Admin and plaintiff see plaintiff messages on right
+                                    isOwnMessage = isPlaintiffMessage;
+                                } else if (isDefendant) {
+                                    // Defendant sees defendant messages on right
+                                    isOwnMessage = isDefendantMessage;
+                                } else {
+                                    // Fallback: use role matching
+                                    isOwnMessage = isPlaintiffMessage;
+                                }
 
                                 return (
                                     <div
@@ -1095,14 +1110,17 @@ export default function DisputeDetail() {
                                         className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} ${msg.pending ? 'opacity-70' : ''}`}
                                     >
                                         <div className={`max-w-[85%] sm:max-w-xs md:max-w-2xl px-3 sm:px-4 py-2 rounded-lg ${isOwnMessage
-                                            ? 'bg-blue-900/60 text-blue-50 border border-blue-600 rounded-br-sm'
-                                            : 'bg-slate-700/70 text-slate-100 border border-slate-500 rounded-bl-sm'
+                                            ? 'bg-blue-900/70 text-blue-50 border border-blue-500 rounded-br-sm'
+                                            : 'bg-slate-800/80 text-slate-100 border border-slate-600 rounded-bl-sm'
                                             }`}>
-                                            <p className={`text-xs font-semibold mb-1 ${isOwnMessage
-                                                ? 'text-blue-200'
-                                                : 'text-slate-300'
-                                                }`}>
-                                                {msg.senderName} <span className={`font-normal ${isOwnMessage ? 'text-blue-300' : 'text-slate-400'}`}>({msg.senderRole})</span>
+                                            <p className="text-xs font-semibold mb-1">
+                                                {msg.senderName}{' '}
+                                                <span className={`font-normal ${isPlaintiffMessage
+                                                    ? 'text-green-400'
+                                                    : 'text-yellow-400'
+                                                    }`}>
+                                                    ({msg.senderRole})
+                                                </span>
                                             </p>
                                             <p className="text-xs sm:text-sm break-words">{msg.content}</p>
                                             {msg.attachmentPath && !msg.pending && (() => {
@@ -1493,7 +1511,7 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
                                 <button
                                     onClick={async () => {
                                         try {
-                                            await api.post(`/admin/approve-resolution/${dispute.id}`);
+                                            await api.post(`/disputes/admin/approve-resolution/${dispute.id}`);
                                             toast.success('Resolution Finalized!');
                                             onUpdate();
                                         } catch (e) { toast.error('Failed to approve'); }

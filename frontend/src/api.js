@@ -85,7 +85,7 @@ export const createDispute = (formData) => api.post('/disputes', formData, {
 });
 export const updateDispute = (id, data) => api.put(`/disputes/${id}`, data);
 export const respondToDispute = (id, data) => api.post(`/disputes/${id}/respond`, data);
-export const acceptCase = (id, data) => api.post(`/disputes/${id}/accept`, data);
+export const acceptCase = (id, data) => api.post(`/disputes/${id}/respond`, data);
 export const getMessages = (id, params) => api.get(`/disputes/${id}/messages`, { params });
 export const sendMessage = (id, formData) => api.post(`/disputes/${id}/messages`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

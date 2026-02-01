@@ -8,12 +8,17 @@ import Evidence from './Evidence.js';
 import Notification from './Notification.js';
 import Contact from './Contact.js';
 import AuditLog from './AuditLog.js';
+import ConversationSummary from './ConversationSummary.js';
+import LegalKnowledge from './LegalKnowledge.js';
 
 // Associations
 User.hasMany(Session, { foreignKey: 'userId', as: 'sessions' });
 Session.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
-// Export everything
+// Dispute associations
+Dispute.hasMany(ConversationSummary, { foreignKey: 'disputeId', as: 'summaries' });
+ConversationSummary.belongsTo(Dispute, { foreignKey: 'disputeId', as: 'dispute' });
+
 export {
     sequelize,
     User,
@@ -23,6 +28,8 @@ export {
     Evidence,
     Notification,
     Contact,
-    AuditLog
+    AuditLog,
+    ConversationSummary,
+    LegalKnowledge
 };
 
