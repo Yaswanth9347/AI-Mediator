@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  ocr-service:
+    build: .
+    container_name: ocr_service
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - ENVIRONMENT=development
+    restart: unless-stopped

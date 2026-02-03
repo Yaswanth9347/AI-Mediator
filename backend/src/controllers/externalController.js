@@ -1,6 +1,6 @@
 
-import { verifyDocumentIsID } from '../services/aiService.js';
 import fs from 'fs';
+import { ocrService, isAllowedIdMimeType } from '../services/ocrIdVerification.js';
 
 export const verifyId = async (req, res) => {
     console.log('🔍 verifyId: Request received');
@@ -28,16 +28,37 @@ export const verifyId = async (req, res) => {
             return res.status(500).json({ error: 'File upload failed - file not found on server' });
         }
 
-        console.log('✅ verifyId: File exists on disk, calling AI service...');
-        const result = await verifyDocumentIsID(req.file.path, req.file.mimetype);
-        console.log('✅ verifyId: AI Service returned:', result);
+        if (!isAllowedIdMimeType(req.file.mimetype, req.file.originalname)) {
+            try {
+                fs.unlinkSync(req.file.path);
+            } catch (e) {
+                console.error('Failed to delete file:', e.message);
+            }
+            return res.status(200).json({
+                status: 'rejected',
+                failure_reason: 'Unsupported file type. Please upload PDF, JPG, or PNG.'
+            });
+        }
+
+        console.log('✅ verifyId: File exists on disk, calling OCR service...');
+        
+        // Use new OCR service
+        const fileInfo = {
+            filePath: req.file.path,
+            originalName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            size: req.file.size
+        };
+
+        const result = await ocrService.verifyGovernmentId(fileInfo);
+        console.log('✅ verifyId: OCR Service returned:', result);
 
         if (!result) {
             console.error('❌ verifyId: AI Service returned null/undefined');
             return res.status(500).json({ error: 'Verification service returned invalid response' });
         }
 
-        if (!result.isValid) {
+        if (!result.isVerified) {
             console.warn('⚠️ verifyId: Invalid Document');
             // Clean up invalid file
             try {
@@ -49,8 +70,8 @@ export const verifyId = async (req, res) => {
             // Return in frontend-expected format
             return res.status(200).json({
                 status: 'rejected',
-                failure_reason: result.details || 'Document verification failed',
-                details: result.details
+                failure_reason: result.error ? result.error.message : 'Document verification failed',
+                details: result.error ? result.error.details : null
             });
         }
 
@@ -58,9 +79,11 @@ export const verifyId = async (req, res) => {
         // Transform to frontend-expected format
         return res.status(200).json({
             status: 'verified',
-            detected_document_type: result.documentType || 'Government ID',
-            verification_method: 'AI',
-            details: result.details || 'Document verified successfully'
+            detected_document_type: result.documentType || 'government_id',
+            verification_method: 'OCR',
+            confidence_score: result.confidence || 0,
+            extracted_fields: result.extractedText ? { text: result.extractedText } : null,
+            details: 'Document verified successfully'
         });
 
     } catch (error) {

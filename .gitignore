@@ -19,6 +19,20 @@ build/
 .mypy_cache/
 .coverage
 htmlcov/
+# Additional Python build artifacts
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
+*.egg
+MANIFEST
 
 # Node - these patterns work recursively for all subdirectories
 node_modules/
@@ -60,6 +74,13 @@ secrets/
 
 # Docker volumes (if any local data)
 docker-data/
+.docker_temp/
+
+# OCR Service specific
+OCR/ocr_service.log
+OCR/ocr_service_new.log
+OCR/ocr_service_8001.log
+OCR/ocr_updated.log
 
 # Uploads (user uploaded files)
 uploads/

@@ -53,7 +53,7 @@ async function fileToGenerativePart(fileSource, mimeType) {
  * Verify if document is a valid ID (simpler check)
  */
 export async function verifyDocumentIsID(path, mimeType) {
-    if (API_KEY === 'API_KEY_MISSING') return { isValid: true, details: "Dev Mode: Verification Skipped" };
+    if (API_KEY === 'API_KEY_MISSING') return { isValid: false, details: "Verification failed: AI API key missing" };
 
     try {
         console.log(`🔍 AI Service: Verifying document at ${path} with type ${mimeType}`);
@@ -96,8 +96,8 @@ export async function verifyDocumentIsID(path, mimeType) {
 
         // Check for Suspended/Permission Denied errors
         if (e.message.includes('403 Forbidden') || e.message.includes('CONSUMER_SUSPENDED') || e.message.includes('Permission denied')) {
-            console.warn('⚠️ API Key Suspended/Invalid - Skipping AI Verification to allow flow.');
-            return { isValid: true, details: "Verification Skipped (API Key Issue)" };
+            console.warn('⚠️ API Key Suspended/Invalid - Verification failed.');
+            return { isValid: false, details: "Verification failed (API Key Issue)" };
         }
 
         return { isValid: false, details: `Internal Verification Error: ${e.message}` };

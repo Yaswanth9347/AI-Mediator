@@ -71,13 +71,14 @@ export default function Profile() {
         try {
             setLoading(true);
             const res = await getUserProfile();
-            setUser(res.data);
+            const profile = res.data?.user || res.data;
+            setUser(profile);
             setProfileForm({
-                username: res.data.username || '',
-                email: res.data.email || '',
-                phone: res.data.phone || '',
-                address: res.data.address || '',
-                occupation: res.data.occupation || ''
+                username: profile?.username || '',
+                email: profile?.email || '',
+                phone: profile?.phone || '',
+                address: profile?.address || '',
+                occupation: profile?.occupation || ''
             });
 
             // Fetch notification preferences
@@ -134,7 +135,10 @@ export default function Profile() {
             const res = await updateUserProfile(profileForm);
             setUser(res.data.user);
             localStorage.setItem('username', res.data.user.username);
-            toast.success('Profile updated successfully!');
+            if (res.data.user.email) {
+                localStorage.setItem('userEmail', res.data.user.email);
+            }
+            toast.success(res.data?.message || 'Profile updated successfully!');
         } catch (error) {
             toast.error(error.response?.data?.error || 'Failed to update profile');
         } finally {
@@ -486,10 +490,11 @@ export default function Profile() {
                                                 <input
                                                     type="text"
                                                     value={profileForm.username}
-                                                    onChange={(e) => setProfileForm({ ...profileForm, username: e.target.value })}
-                                                    className="w-full px-4 py-2.5 bg-slate-700/50 border border-blue-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-blue-100 placeholder-blue-400/50 text-sm"
+                                                    readOnly
+                                                    className="w-full px-4 py-2.5 bg-slate-700/30 border border-blue-700 rounded-lg text-blue-200/80 text-sm cursor-not-allowed"
                                                     required
                                                 />
+                                                <p className="mt-1 text-xs text-blue-400">Username is permanent and cannot be changed.</p>
                                             </div>
 
                                             {/* Email */}

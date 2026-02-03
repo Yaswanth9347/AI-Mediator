@@ -43,6 +43,93 @@ const getFileUrl = (filePath) => {
     return `http://localhost:5000/uploads/${cleanPath}`;
 };
 
+// Helper function to get progress steps based on dispute status
+const getProgressSteps = (dispute) => {
+    const status = dispute.status;
+    const resolutionStatus = dispute.resolutionStatus;
+
+    // Resolution phase steps (for Resolved, ResolutionInProgress, PendingAdminApproval)
+    if (status === 'Resolved' || status === 'ResolutionInProgress' || status === 'PendingAdminApproval' || resolutionStatus !== 'None') {
+        const steps = [
+            { label: 'Verify Details', description: 'Confirm personal information' },
+            { label: 'Digital Signature', description: 'Sign the resolution agreement' },
+            { label: 'Admin Review', description: 'Final compliance check' },
+            { label: 'Resolved', description: 'Case closed and agreement generated' }
+        ];
+
+        let currentStep = 0;
+        if (status === 'Resolved') currentStep = 4;
+        else if (status === 'PendingAdminApproval' || resolutionStatus === 'AdminReview') currentStep = 2;
+        else if (dispute.plaintiffSignature && dispute.respondentSignature) currentStep = 2;
+        else if (dispute.plaintiffVerified && dispute.respondentVerified) currentStep = 1;
+        else currentStep = 0;
+
+        return { steps, currentStep };
+    }
+
+    // AwaitingDecision phase
+    if (status === 'AwaitingDecision') {
+        const steps = [
+            { label: 'AI Analysis Complete', description: 'Solutions generated' },
+            { label: 'Review Solutions', description: 'Both parties review options' },
+            { label: 'Vote', description: 'Select preferred solution' },
+            { label: 'Agreement', description: 'Proceed to resolution' }
+        ];
+
+        let currentStep = 0;
+        if (dispute.plaintiffChoice !== null && dispute.defendantChoice !== null) {
+            if (dispute.plaintiffChoice === dispute.defendantChoice && dispute.plaintiffChoice !== -1) {
+                currentStep = 3; // Agreement reached
+            } else {
+                currentStep = 2; // Both voted but no agreement
+            }
+        } else if (dispute.plaintiffChoice !== null || dispute.defendantChoice !== null) {
+            currentStep = 2; // One party voted
+        } else {
+            currentStep = 1; // Reviewing
+        }
+
+        return { steps, currentStep };
+    }
+
+    // Active phase (discussion ongoing)
+    if (status === 'Active') {
+        const steps = [
+            { label: 'Case Accepted', description: 'Both parties engaged' },
+            { label: 'Discussion', description: 'Exchange messages and evidence' },
+            { label: 'AI Analysis', description: 'Awaiting 10+ messages' },
+            { label: 'Solutions Ready', description: 'Review AI proposals' }
+        ];
+
+        const messageCount = dispute.messageCount || 0;
+        let currentStep = messageCount >= 10 ? 2 : 1;
+
+        return { steps, currentStep };
+    }
+
+    // Pending phase (awaiting defendant response)
+    if (status === 'Pending') {
+        const steps = [
+            { label: 'Case Submitted', description: 'Complaint filed' },
+            { label: 'Awaiting Response', description: 'Defendant notified' },
+            { label: 'Case Accepted', description: 'Both parties ready' },
+            { label: 'Discussion Begins', description: 'Start mediation' }
+        ];
+
+        return { steps, currentStep: dispute.respondentAccepted ? 2 : 1 };
+    }
+
+    // Default fallback
+    return {
+        steps: [
+            { label: 'Case Created', description: 'Dispute initiated' },
+            { label: 'In Progress', description: 'Mediation ongoing' }
+        ],
+        currentStep: 1
+    };
+};
+
+
 export default function DisputeDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -797,11 +884,25 @@ export default function DisputeDetail() {
                     <p className="text-sm text-blue-100">{dispute.description}</p>
                 </div>
 
+                {/* Progress Timeline - Universal for all case states */}
+                {!dispute.forwardedToCourt && (() => {
+                    const { steps, currentStep } = getProgressSteps(dispute);
+                    return (
+                        <div className="p-6 border-b border-blue-800">
+                            <ResolutionProgress
+                                steps={steps}
+                                currentStep={currentStep}
+                                isCompact={false}
+                            />
+                        </div>
+                    );
+                })()}
+
                 {/* Accept Case Banner with Verification */}
                 {isDefendant && !dispute.respondentAccepted && !dispute.forwardedToCourt && (
-                    <div className="p-6 bg-slate-900/50 border-b border-blue-800">
+                    <div className="p-6 border-b border-blue-800 bg-slate-900/30">
                         <div className="mb-4">
-                            <h3 className="text-lg font-bold text-blue-100 mb-2">Accept Case Logic</h3>
+                            <h3 className="text-lg font-bold text-blue-100 mb-2">Accept Case</h3>
                             <p className="text-sm text-blue-300">
                                 To ensure fairness and security, you must verify your identity before participating in this dispute.
                             </p>
@@ -838,7 +939,7 @@ export default function DisputeDetail() {
                                 {idVerificationStatus === 'verified' && (
                                     <div className="text-sm">
                                         <p className="text-green-300 mb-1"><strong>Name:</strong> {idVerificationResult?.details?.name || 'Verified Person'}</p>
-                                        <p className="text-green-300"><strong>ID No:</strong> {idVerificationResult?.details?.idNumber || 'Create'}</p>
+                                        <p className="text-green-300"><strong>ID No:</strong> {idVerificationResult?.details?.idNumber || 'Verified'}</p>
                                     </div>
                                 )}
 
@@ -938,7 +1039,7 @@ export default function DisputeDetail() {
 
                 {/* AI Solutions Section: Show ONLY if NOT in resolution phase yet */}
                 {Array.isArray(aiSolutions) && aiSolutions.length > 0 && !dispute.forwardedToCourt && dispute.resolutionStatus === 'None' && dispute.status !== 'ResolutionInProgress' && dispute.status !== 'Resolved' && (
-                    <div className="p-4 sm:p-6 bg-slate-900/30 border-b border-blue-800">
+                    <div className="p-6 border-b border-blue-800 bg-slate-900/30">
                         <div className="flex flex-wrap items-center gap-2 mb-4">
                             <Scale className="w-5 h-5 text-blue-400" />
                             <h3 className="text-base sm:text-lg font-bold text-blue-100">AI Proposed Solutions</h3>

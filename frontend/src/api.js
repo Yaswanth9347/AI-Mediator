@@ -10,7 +10,7 @@ const api = axios.create({
 
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem('token');
-    if (token) {
+    if (token && !config.skipAuth) {
         config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
@@ -23,17 +23,17 @@ api.interceptors.response.use(
         // Handle 401 errors - redirect to login
         if (error.response?.status === 401) {
             const errorCode = error.response?.data?.code;
+            const hadToken = !!localStorage.getItem('token');
 
             // Clear local storage for any auth error
             localStorage.removeItem('token');
             localStorage.removeItem('role');
             localStorage.removeItem('username');
 
-            // Show appropriate message based on error code
-            if (errorCode === 'SESSION_INVALID') {
-                // Session was revoked or expired - show notification
+            // Show appropriate message based on error code (only if there was an active token)
+            if (hadToken && errorCode === 'SESSION_INVALID') {
                 sessionStorage.setItem('sessionExpiredMessage', 'Your session was ended. Please log in again.');
-            } else if (errorCode === 'TOKEN_EXPIRED') {
+            } else if (hadToken && errorCode === 'TOKEN_EXPIRED') {
                 sessionStorage.setItem('sessionExpiredMessage', 'Your session has expired. Please log in again.');
             }
 
@@ -127,7 +127,7 @@ export const forgotPassword = (email) => api.post('/auth/forgot-password', { ema
 export const resetPassword = (token, newPassword) => api.post('/auth/reset-password', { token, newPassword });
 
 // Email Verification APIs
-export const verifyEmail = (token) => api.get(`/auth/verify-email/${token}`);
+export const verifyEmail = (token) => api.get(`/auth/verify-email/${token}`, { skipAuth: true });
 export const resendVerificationEmail = (email) => api.post('/auth/resend-verification', { email });
 
 // Case History / Audit Trail

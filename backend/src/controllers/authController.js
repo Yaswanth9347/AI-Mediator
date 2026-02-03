@@ -168,10 +168,30 @@ export const login = async (req, res) => {
             });
         }
 
+        // Enforce email verification before login
+        if (!user.isEmailVerified) {
+            await logAuditEvent({
+                action: AuditActions.USER_LOGIN_FAILED,
+                category: AuditCategories.AUTH,
+                user: { id: user.id, email: user.email, username: user.username, role: user.role },
+                description: `Login attempt before email verification: ${username}`,
+                request: req,
+                status: 'FAILURE',
+                errorMessage: 'Email not verified'
+            });
+            logWarn('Login blocked - email not verified', { userId: user.id, username, email: user.email });
+            return res.status(403).json({
+                error: 'Please verify your email before logging in.',
+                requiresEmailVerification: true,
+                email: user.email
+            });
+        }
+
         // Successful login - reset failed attempts
         await securityMiddleware.resetFailedLoginAttempts(user);
 
-        const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+        const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '15m';
+        const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: jwtExpiresIn });
 
         // Create session in session store
         const clientIP = getClientIP(req);

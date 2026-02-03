@@ -14,6 +14,7 @@ export default function Login() {
     const [registeredEmail, setRegisteredEmail] = useState('');
     const [resending, setResending] = useState(false);
     const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
+    const [verificationRequired, setVerificationRequired] = useState(false);
 
     // Check for session expired message on mount
     useEffect(() => {
@@ -43,6 +44,7 @@ export default function Login() {
         e.preventDefault();
         setError('');
         setSessionExpiredMessage(''); // Clear any session message
+        setVerificationRequired(false);
         try {
             const endpoint = isLogin ? '/auth/login' : '/auth/register';
             const res = await api.post(endpoint, formData);
@@ -66,7 +68,15 @@ export default function Login() {
             console.error('Login error:', err);
             if (err.response) {
                 // Server responded with an error status code
-                setError(err.response.data?.error || `Server Error: ${err.response.status}`);
+                const data = err.response.data;
+                if (data?.requiresEmailVerification) {
+                    setVerificationRequired(true);
+                    setRegisteredEmail(data?.email || '');
+                    setError('');
+                    toast.error('Please verify your email before logging in.');
+                } else {
+                    setError(data?.error || `Server Error: ${err.response.status}`);
+                }
             } else if (err.request) {
                 // Request was made but no response received (Network Error)
                 setError('Network Error: Unable to reach server. Check IP configuration.');
@@ -140,6 +150,69 @@ export default function Login() {
                                     className="w-full py-2.5 px-4 border border-blue-700 rounded-lg text-blue-300 hover:bg-slate-700/50 transition-colors text-sm font-medium disabled:opacity-50"
                                 >
                                     {resending ? 'Sending...' : "Didn't receive email? Resend"}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Show email verification required message
+    if (verificationRequired) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 py-8 px-4 sm:px-6 lg:px-8">
+                <div className="w-full max-w-md">
+                    {/* Brand Header */}
+                    <div className="text-center mb-6">
+                        <div className="inline-flex items-center justify-center w-14 h-14 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl shadow-lg mb-3">
+                            <Scale className="w-7 h-7 text-white" />
+                        </div>
+                        <h1 className="text-2xl font-semibold text-blue-100">AI Dispute Resolution</h1>
+                        <p className="text-sm text-blue-300 mt-1">Email Verification Required</p>
+                    </div>
+
+                    {/* Verification Required Card */}
+                    <div className="bg-slate-800/70 backdrop-blur-xl rounded-xl shadow-2xl border border-blue-800 p-8">
+                        <div className="text-center">
+                            <div className="mx-auto flex items-center justify-center w-16 h-16 rounded-xl bg-yellow-900/30 mb-4">
+                                <AlertCircle className="h-8 w-8 text-yellow-400" />
+                            </div>
+                            <h2 className="text-xl font-semibold text-yellow-100 mb-2">
+                                Verify Your Email to Continue
+                            </h2>
+                            <p className="text-sm text-blue-300 mb-6">
+                                We found your account, but your email is not verified yet.
+                            </p>
+
+                            {registeredEmail && (
+                                <div className="bg-blue-950/50 border border-blue-800 p-4 mb-6 text-left rounded-lg">
+                                    <p className="text-sm font-medium text-blue-200 mb-2">Verification Email:</p>
+                                    <p className="text-sm text-blue-300">
+                                        <span className="font-semibold text-blue-200">{registeredEmail}</span>
+                                    </p>
+                                </div>
+                            )}
+
+                            <div className="space-y-3">
+                                <button
+                                    onClick={handleResendVerification}
+                                    disabled={resending || !registeredEmail}
+                                    className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 rounded-lg text-white transition-colors text-sm font-medium disabled:opacity-50"
+                                >
+                                    {resending ? 'Sending...' : 'Resend Verification Email'}
+                                </button>
+
+                                <button
+                                    onClick={() => {
+                                        setVerificationRequired(false);
+                                        setIsLogin(true);
+                                        setFormData({ username: '', email: '', password: '', role: 'User' });
+                                    }}
+                                    className="w-full py-2.5 px-4 border border-blue-700 rounded-lg text-blue-300 hover:bg-slate-700/50 transition-colors text-sm font-medium"
+                                >
+                                    Back to Login
                                 </button>
                             </div>
                         </div>

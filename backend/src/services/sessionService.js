@@ -5,7 +5,7 @@ import { logInfo, logWarn, logError } from './logger.js';
 
 // Session configuration
 const SESSION_CONFIG = {
-    TOKEN_EXPIRY_HOURS: 24,
+    TOKEN_EXPIRY_MINUTES: parseInt(process.env.SESSION_TTL_MINUTES || '15', 10),
     MAX_SESSIONS_PER_USER: 10,
     CLEANUP_INTERVAL_HOURS: 6,
     ACTIVITY_UPDATE_INTERVAL_MS: 5 * 60 * 1000 // 5 minutes
@@ -112,7 +112,7 @@ class SessionService {
 
         const deviceInfo = parseUserAgent(userAgent);
         const tokenHash = hashToken(token);
-        const expiresAt = new Date(Date.now() + SESSION_CONFIG.TOKEN_EXPIRY_HOURS * 60 * 60 * 1000);
+        const expiresAt = new Date(Date.now() + SESSION_CONFIG.TOKEN_EXPIRY_MINUTES * 60 * 1000);
 
         // Enforce max sessions per user
         const activeSessions = await this.Session.count({

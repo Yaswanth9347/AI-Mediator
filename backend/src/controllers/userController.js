@@ -102,17 +102,26 @@ export const getProfile = async (req, res) => {
  */
 export const updateProfile = async (req, res) => {
     try {
-        const { fullName, phone, address, profileVisibility } = req.body;
+        const { email, phone, address, occupation, profileVisibility } = req.body;
 
         const user = await User.findByPk(req.user.id);
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        // Enforce immutable username by ignoring any username updates
+
         // Update allowed fields
-        if (fullName) user.fullName = fullName;
-        if (phone) user.phone = phone;
-        if (address) user.address = address;
+        if (email && email !== user.email) {
+            const existingUser = await User.findOne({ where: { email } });
+            if (existingUser && existingUser.id !== user.id) {
+                return res.status(400).json({ error: 'Email is already in use' });
+            }
+            user.email = email;
+        }
+        if (phone !== undefined) user.phone = phone;
+        if (address !== undefined) user.address = address;
+        if (occupation !== undefined) user.occupation = occupation;
         if (profileVisibility) user.profileVisibility = profileVisibility;
 
         await user.save();

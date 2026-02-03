@@ -7,7 +7,8 @@ import notificationService from '../services/notificationService.js';
 import { AuditLog, logAuditEvent, getDisputeAuditLogs, AuditActions, AuditCategories } from '../services/auditService.js';
 import { logInfo, logError } from '../services/logger.js';
 import { emitToDispute, emitToUser } from '../services/socketService.js';
-import { checkAndTriggerAI, verifyDocumentIsID } from '../services/aiService.js';
+import { checkAndTriggerAI } from '../services/aiService.js';
+import { verifyGovtIdDocument, isAllowedIdMimeType } from '../services/ocrIdVerification.js';
 import { processEvidenceOcr, isOcrSupported } from '../services/ocrService.js';
 import { generateCaseSummaryPDF, generateAgreementPDF } from '../services/report/index.js';
 import fs from 'fs';
@@ -29,11 +30,15 @@ export const createDispute = async (req, res) => {
         }
 
         console.log("Verifying ID Document...");
-        const idVerification = await verifyDocumentIsID(req.files.idCard[0].path);
-        if (!idVerification.isValid) {
-            return res.status(400).json({ error: `Invalid Identity Document: ${idVerification.details}` });
+        const idFile = req.files.idCard[0];
+        if (!isAllowedIdMimeType(idFile.mimetype, idFile.originalname)) {
+            return res.status(400).json({ error: 'Unsupported file type. Please upload PDF, JPG, or PNG.' });
         }
-        console.log("ID Verified:", idVerification.details);
+        const idVerification = await verifyGovtIdDocument(idFile.path, idFile.mimetype, idFile.originalname);
+        if (!idVerification.isValid) {
+            return res.status(400).json({ error: `Invalid Identity Document: ${idVerification.failure_reason || 'Verification failed'}` });
+        }
+        console.log("ID Verified:", idVerification.detected_document_type || 'government_id');
 
         const {
             title,
