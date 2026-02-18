@@ -10,6 +10,7 @@ import { useNotifications } from '../context/NotificationContext';
 import CaseHistory from '../components/CaseHistory';
 import EvidenceSection from '../components/EvidenceSection';
 import ResolutionProgress from '../components/ResolutionProgress';
+import RespondentAcceptance from '../components/RespondentAcceptance';
 
 // Helper function to get file type from path
 const getFileType = (filePath) => {
@@ -898,80 +899,16 @@ export default function DisputeDetail() {
                     );
                 })()}
 
-                {/* Accept Case Banner with Verification */}
+                {/* Respondent Acceptance - New Component */}
                 {isDefendant && !dispute.respondentAccepted && !dispute.forwardedToCourt && (
-                    <div className="p-6 border-b border-blue-800 bg-slate-900/30">
-                        <div className="mb-4">
-                            <h3 className="text-lg font-bold text-blue-100 mb-2">Accept Case</h3>
-                            <p className="text-sm text-blue-300">
-                                To ensure fairness and security, you must verify your identity before participating in this dispute.
-                            </p>
-                        </div>
-
-                        <div className="flex flex-col md:flex-row items-center gap-6">
-                            {/* Verification Status Card */}
-                            <div className={`flex-1 w-full p-4 rounded-lg border ${idVerificationStatus === 'verified' ? 'bg-green-500/10 border-green-500/50' :
-                                idVerificationStatus === 'rejected' || idVerificationStatus === 'error' ? 'bg-red-500/10 border-red-500/50' :
-                                    'bg-slate-800 border-blue-800'
-                                }`}>
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-sm font-semibold text-blue-200">Identity Verification</span>
-                                    {idVerificationStatus === 'verifying' && <span className="text-xs text-blue-400 animate-pulse">Verifying...</span>}
-                                    {idVerificationStatus === 'verified' && <span className="text-xs text-green-400 font-bold">✓ Verified</span>}
-                                </div>
-
-                                {idVerificationStatus === 'idle' && (
-                                    <div className="text-center py-2">
-                                        <p className="text-xs text-blue-400 mb-3">Please upload your Government ID (Aadhaar/PAN/Driving License)</p>
-                                        <label className="cursor-pointer inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors">
-                                            <input type="file" className="hidden" accept="image/*,application/pdf" onChange={handleIdUpload} />
-                                            Upload ID Card
-                                        </label>
-                                    </div>
-                                )}
-
-                                {idVerificationStatus === 'verifying' && (
-                                    <div className="flex justify-center py-4">
-                                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                                    </div>
-                                )}
-
-                                {idVerificationStatus === 'verified' && (
-                                    <div className="text-sm">
-                                        <p className="text-green-300 mb-1"><strong>Name:</strong> {idVerificationResult?.details?.name || 'Verified Person'}</p>
-                                        <p className="text-green-300"><strong>ID No:</strong> {idVerificationResult?.details?.idNumber || 'Verified'}</p>
-                                    </div>
-                                )}
-
-                                {(idVerificationStatus === 'rejected' || idVerificationStatus === 'error') && (
-                                    <div className="text-center py-2">
-                                        <p className="text-xs text-red-400 mb-2">{verificationError}</p>
-                                        <label className="cursor-pointer text-xs text-blue-400 hover:underline">
-                                            <input type="file" className="hidden" accept="image/*" onChange={handleIdUpload} />
-                                            Try Again
-                                        </label>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Action Button */}
-                            <div className="shrink-0">
-                                <button
-                                    onClick={handleAcceptCase}
-                                    disabled={idVerificationStatus !== 'verified'}
-                                    className={`px-8 py-3 rounded-lg font-bold flex items-center transition-all ${idVerificationStatus === 'verified'
-                                        ? 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-lg shadow-green-900/20'
-                                        : 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                                        }`}
-                                >
-                                    <CheckCircle className="w-5 h-5 mr-2" />
-                                    Accept Case
-                                </button>
-                                {idVerificationStatus !== 'verified' && (
-                                    <p className="text-xs text-center text-slate-500 mt-2">Verification required</p>
-                                )}
-                            </div>
-                        </div>
+                    <div className="p-6 border-b border-blue-800">
+                        <RespondentAcceptance 
+                            dispute={dispute} 
+                            onAccepted={() => {
+                                // Refresh dispute data
+                                fetchDispute();
+                            }} 
+                        />
                     </div>
                 )}
 
@@ -1132,8 +1069,26 @@ export default function DisputeDetail() {
                 )}
             </div>
 
-            {/* Evidence Section */}
-            {!dispute.forwardedToCourt && (
+            {/* Waiting for Respondent Acceptance - Show to Plaintiff */}
+            {!dispute.respondentAccepted && !dispute.forwardedToCourt && isPlaintiff && (
+                <div className="mt-6 mb-6 p-6 bg-yellow-900/20 border-2 border-yellow-600/40 rounded-lg">
+                    <div className="flex items-start gap-3">
+                        <Clock className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                            <h3 className="text-lg font-semibold text-yellow-300 mb-2">Waiting for Respondent</h3>
+                            <p className="text-sm text-yellow-200 mb-2">
+                                {dispute.respondentName} needs to verify their identity and accept the case before you can access the discussion, evidence, and other case features.
+                            </p>
+                            <p className="text-xs text-yellow-300">
+                                The respondent has been notified via email. You will be notified when they accept the case.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Evidence Section - Only accessible after respondent accepts */}
+            {!dispute.forwardedToCourt && dispute.respondentAccepted && (
                 <div className="mt-6 mb-6">
                     <EvidenceSection
                         disputeId={id}
@@ -1146,7 +1101,7 @@ export default function DisputeDetail() {
                 </div>
             )}
 
-            {/* Chat Section */}
+            {/* Chat Section - Only accessible after respondent accepts */}
             {(dispute.respondentAccepted || isPlaintiff || isAdmin) && !dispute.forwardedToCourt && (
                 <div className="bg-slate-900/50 border border-blue-800 rounded-lg overflow-hidden h-[500px] md:h-[700px] flex flex-col">
                     <div className="px-3 sm:px-4 py-2 sm:py-3 bg-slate-900/70 border-b border-blue-800 flex items-center justify-between shrink-0">

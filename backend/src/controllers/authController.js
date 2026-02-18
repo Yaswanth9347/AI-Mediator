@@ -168,8 +168,8 @@ export const login = async (req, res) => {
             });
         }
 
-        // Enforce email verification before login
-        if (!user.isEmailVerified) {
+        // Enforce email verification before login (skip for Admin)
+        if (!user.isEmailVerified && user.role !== 'Admin') {
             await logAuditEvent({
                 action: AuditActions.USER_LOGIN_FAILED,
                 category: AuditCategories.AUTH,
