@@ -5,7 +5,7 @@ import { logInfo, logWarn, logError } from './logger.js';
 
 // Session configuration
 const SESSION_CONFIG = {
-    TOKEN_EXPIRY_MINUTES: parseInt(process.env.SESSION_TTL_MINUTES || '15', 10),
+    TOKEN_EXPIRY_MINUTES: parseInt(process.env.SESSION_TTL_MINUTES || '60', 10),
     MAX_SESSIONS_PER_USER: 10,
     CLEANUP_INTERVAL_HOURS: 6,
     ACTIVITY_UPDATE_INTERVAL_MS: 5 * 60 * 1000 // 5 minutes
@@ -211,10 +211,12 @@ class SessionService {
         const lastUpdate = this.lastActivityUpdates.get(sessionId);
         const now = Date.now();
 
-        // Only update if enough time has passed
+        // Only update if enough time has passed (rate-limited)
         if (!lastUpdate || (now - lastUpdate) >= SESSION_CONFIG.ACTIVITY_UPDATE_INTERVAL_MS) {
+            // Sliding session: extend expiry on activity
+            const newExpiresAt = new Date(now + SESSION_CONFIG.TOKEN_EXPIRY_MINUTES * 60 * 1000);
             await this.Session.update(
-                { lastActivity: new Date() },
+                { lastActivity: new Date(), expiresAt: newExpiresAt },
                 { where: { id: sessionId } }
             );
             this.lastActivityUpdates.set(sessionId, now);

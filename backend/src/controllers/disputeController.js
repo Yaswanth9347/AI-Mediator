@@ -1,6 +1,7 @@
 
 import { validationResult } from 'express-validator';
 import { Op } from 'sequelize';
+import sequelize from '../config/db.js';
 import { Dispute, User, Message, Evidence } from '../models/index.js';
 import emailService from '../services/email/index.js';
 import notificationService from '../services/notificationService.js';
@@ -15,6 +16,17 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createWorker } from 'tesseract.js'; // For initial evidence OCR
+
+// Helper: case-insensitive email comparison
+const emailMatch = (a, b) => (a || '').toLowerCase() === (b || '').toLowerCase();
+
+// Helper: check if user is a party to the dispute (plaintiff, defendant, or admin)
+const getUserDisputeRole = (user, dispute) => {
+    if (emailMatch(user.email, dispute.plaintiffEmail) || user.id === dispute.creatorId) return 'plaintiff';
+    if (emailMatch(user.email, dispute.respondentEmail)) return 'defendant';
+    if (user.role === 'Admin') return 'admin';
+    return null;
+};
 
 // Create a new dispute
 export const createDispute = async (req, res) => {
@@ -44,16 +56,18 @@ export const createDispute = async (req, res) => {
             title,
             description,
             plaintiffName,
-            plaintiffEmail,
             plaintiffPhone,
             plaintiffAddress,
             plaintiffOccupation,
             respondentName,
-            respondentEmail,
             respondentPhone,
             respondentAddress,
             respondentOccupation
         } = req.body;
+
+        // Normalize emails to lowercase to prevent case-sensitivity mismatches
+        const plaintiffEmail = (req.body.plaintiffEmail || '').trim().toLowerCase();
+        const respondentEmail = (req.body.respondentEmail || '').trim().toLowerCase();
 
         let evidenceText = '';
         const evidenceFile = req.files.evidence ? req.files.evidence[0] : null;
@@ -188,6 +202,14 @@ export const respondToDispute = async (req, res) => {
             );
         }
 
+        // Emit real-time event to both parties in the dispute room
+        emitToDispute(dispute.id, 'dispute:accepted', {
+            respondentAccepted: true,
+            status: dispute.status,
+            defendantStatement: dispute.defendantStatement,
+            respondentIdVerified: dispute.respondentIdVerified,
+        });
+
         res.json(dispute);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -198,23 +220,65 @@ export const respondToDispute = async (req, res) => {
 export const getDisputes = async (req, res) => {
     try {
         const user = await User.findByPk(req.user.id);
-        let disputes;
-        if (user.role === 'Admin') {
-            disputes = await Dispute.findAll({ order: [['createdAt', 'DESC']] });
-        } else {
-            disputes = await Dispute.findAll({
-                where: {
-                    [Op.or]: [
-                        { creatorId: user.id },
-                        { plaintiffEmail: user.email },
-                        { respondentEmail: user.email }
-                    ]
-                },
-                order: [['createdAt', 'DESC']]
+        const { page = 1, limit = 50, search, status } = req.query;
+        const offset = (parseInt(page) - 1) * parseInt(limit);
+
+        let whereClause = {};
+
+        // Role-based base filter
+        if (user.role !== 'Admin') {
+            const userEmailLower = user.email.toLowerCase();
+            whereClause = {
+                [Op.or]: [
+                    { creatorId: user.id },
+                    sequelize.where(
+                        sequelize.fn('LOWER', sequelize.col('plaintiffEmail')),
+                        userEmailLower
+                    ),
+                    sequelize.where(
+                        sequelize.fn('LOWER', sequelize.col('respondentEmail')),
+                        userEmailLower
+                    )
+                ]
+            };
+        }
+
+        // Status filter
+        if (status && status !== 'All') {
+            whereClause.status = status;
+        }
+
+        // Search filter
+        if (search) {
+            whereClause[Op.and] = whereClause[Op.and] || [];
+            whereClause[Op.and].push({
+                [Op.or]: [
+                    { title: { [Op.iLike]: `%${search}%` } },
+                    { description: { [Op.iLike]: `%${search}%` } }
+                ]
             });
         }
-        res.json(disputes);
+
+        const { count, rows: disputes } = await Dispute.findAndCountAll({
+            where: whereClause,
+            order: [['createdAt', 'DESC']],
+            limit: parseInt(limit),
+            offset
+        });
+
+        logInfo('Disputes fetched', { userId: user.id, email: user.email, role: user.role, count });
+
+        res.json({
+            disputes,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(count / parseInt(limit)),
+                totalItems: count,
+                itemsPerPage: parseInt(limit)
+            }
+        });
     } catch (error) {
+        logError('Failed to fetch disputes', { error: error.message, userId: req.user?.id });
         res.status(500).json({ error: error.message });
     }
 };
@@ -228,8 +292,8 @@ export const getDispute = async (req, res) => {
         // Security: Ensure user is related to dispute or Admin
         const user = await User.findByPk(req.user.id);
         if (user.role !== 'Admin' &&
-            user.email !== dispute.plaintiffEmail &&
-            user.email !== dispute.respondentEmail &&
+            !emailMatch(user.email, dispute.plaintiffEmail) &&
+            !emailMatch(user.email, dispute.respondentEmail) &&
             user.id !== dispute.creatorId) {
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -285,22 +349,17 @@ export const sendMessage = async (req, res) => {
         let senderRole = 'unknown';
         let senderName = currentUser.username;
 
-        if (currentUser.email === dispute.plaintiffEmail) {
-            senderRole = 'plaintiff';
-            senderName = dispute.plaintiffName;
-        } else if (currentUser.email === dispute.respondentEmail) {
-            senderRole = 'defendant';
-            senderName = dispute.respondentName;
-        } else if (currentUser.role === 'Admin') {
-            senderRole = 'admin';
-            senderName = 'Admin';
-        } else {
+        senderRole = getUserDisputeRole(currentUser, dispute);
+        if (!senderRole) {
             return res.status(403).json({ error: 'You are not a party to this dispute.' });
         }
+        if (senderRole === 'plaintiff') senderName = dispute.plaintiffName;
+        else if (senderRole === 'defendant') senderName = dispute.respondentName;
+        else if (senderRole === 'admin') senderName = 'Admin';
 
-        // Check if defendant has accepted (only plaintiff can message before acceptance)
-        if (!dispute.respondentAccepted && senderRole === 'defendant') {
-            return res.status(403).json({ error: 'You must accept the case before sending messages.' });
+        // Check if defendant has accepted (both parties can only message after acceptance)
+        if (!dispute.respondentAccepted && senderRole !== 'admin') {
+            return res.status(403).json({ error: 'Case discussion is available only after the respondent accepts the case.' });
         }
 
         const message = await Message.create({
@@ -342,7 +401,7 @@ export const sendMessage = async (req, res) => {
         });
 
         // Send in-app notification
-        const recipientEmail = currentUser.email === dispute.plaintiffEmail ?
+        const recipientEmail = emailMatch(currentUser.email, dispute.plaintiffEmail) ?
             dispute.respondentEmail : dispute.plaintiffEmail;
         const recipientUser = await User.findOne({ where: { email: recipientEmail } });
         if (recipientUser) {
@@ -380,8 +439,8 @@ export const uploadEvidence = async (req, res) => {
         }
 
         const currentUser = await User.findByPk(req.user.id);
-        const isPlaintiff = currentUser.email === dispute.plaintiffEmail;
-        const isDefendant = currentUser.email === dispute.respondentEmail;
+        const isPlaintiff = emailMatch(currentUser.email, dispute.plaintiffEmail) || currentUser.id === dispute.creatorId;
+        const isDefendant = emailMatch(currentUser.email, dispute.respondentEmail);
         const isAdmin = req.user.role === 'Admin';
 
         if (isAdmin) return res.status(403).json({ error: 'Admins can view evidence but cannot upload' });
@@ -451,7 +510,7 @@ export const uploadEvidence = async (req, res) => {
             }
         });
 
-        const recipientEmail = currentUser.email === dispute.plaintiffEmail ? dispute.respondentEmail : dispute.plaintiffEmail;
+        const recipientEmail = emailMatch(currentUser.email, dispute.plaintiffEmail) ? dispute.respondentEmail : dispute.plaintiffEmail;
         const recipientUser = await User.findOne({ where: { email: recipientEmail } });
         if (recipientUser) {
             await notificationService.notifyEvidenceUploaded(
@@ -496,8 +555,8 @@ export const getEvidenceList = async (req, res) => {
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        const isParty = currentUser.email === dispute.plaintiffEmail ||
-            currentUser.email === dispute.respondentEmail ||
+        const isParty = emailMatch(currentUser.email, dispute.plaintiffEmail) ||
+            emailMatch(currentUser.email, dispute.respondentEmail) ||
             currentUser.id === dispute.creatorId;
         const isAdmin = req.user.role === 'Admin';
 
@@ -540,7 +599,7 @@ export const downloadEvidence = async (req, res) => {
         const dispute = await Dispute.findByPk(req.params.id);
         const currentUser = await User.findByPk(req.user.id);
         const isAdmin = req.user.role === 'Admin';
-        const isParty = currentUser.email === dispute.plaintiffEmail || currentUser.email === dispute.respondentEmail || currentUser.id === dispute.creatorId;
+        const isParty = emailMatch(currentUser.email, dispute.plaintiffEmail) || emailMatch(currentUser.email, dispute.respondentEmail) || currentUser.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) return res.status(403).json({ error: 'Not authorized' });
 
@@ -577,7 +636,7 @@ export const previewEvidence = async (req, res) => {
         // If coming from a protected route, we verify access.
         // Assuming req.user is set.
         const isAdmin = req.user.role === 'Admin';
-        const isParty = req.user.email === dispute.plaintiffEmail || req.user.email === dispute.respondentEmail || req.user.id === dispute.creatorId;
+        const isParty = emailMatch(req.user.email, dispute.plaintiffEmail) || emailMatch(req.user.email, dispute.respondentEmail) || req.user.id === dispute.creatorId;
 
         if (!isAdmin && !isParty) return res.status(403).json({ error: 'Not authorized' });
 
@@ -662,13 +721,13 @@ export const submitDecision = async (req, res) => {
         if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
 
         const currentUser = await User.findByPk(req.user.id);
-        const isPlaintiff = currentUser.email === dispute.plaintiffEmail;
-        const isDefendant = currentUser.email === dispute.respondentEmail;
+        const isPlaintiff = emailMatch(currentUser.email, dispute.plaintiffEmail) || currentUser.id === dispute.creatorId;
+        const isDefendant = emailMatch(currentUser.email, dispute.respondentEmail);
 
         if (!isPlaintiff && !isDefendant) return res.status(403).json({ error: 'Not authorized' });
 
         if (isPlaintiff) dispute.plaintiffChoice = choice;
-        else dispute.respondentChoice = choice;
+        else dispute.defendantChoice = choice;
 
         await dispute.save();
 
@@ -685,7 +744,7 @@ export const submitDecision = async (req, res) => {
         });
 
         // Check for agreement
-        if (dispute.plaintiffChoice !== null && dispute.plaintiffChoice === dispute.respondentChoice && dispute.plaintiffChoice !== -1) {
+        if (dispute.plaintiffChoice !== null && dispute.plaintiffChoice === dispute.defendantChoice && dispute.plaintiffChoice !== -1) {
             dispute.status = 'Resolved';
             dispute.resolutionStatus = 'Settled';
 
@@ -702,7 +761,7 @@ export const submitDecision = async (req, res) => {
             // Notify
             await emailService.notifyResolutionSuccess(dispute);
             emitToDispute(dispute.id, 'dispute:resolved', { disputeId: dispute.id, status: 'Resolved' });
-        } else if (dispute.plaintiffChoice !== null && dispute.respondentChoice !== null && dispute.plaintiffChoice !== dispute.respondentChoice) {
+        } else if (dispute.plaintiffChoice !== null && dispute.defendantChoice !== null && dispute.plaintiffChoice !== dispute.defendantChoice) {
             // Conflict
             emitToDispute(dispute.id, 'dispute:conflict', { disputeId: dispute.id });
         }
@@ -723,8 +782,8 @@ export const verifyDetails = async (req, res) => {
 
         if (!confirmed) return res.status(400).json({ error: 'You must confirm your details.' });
 
-        if (currentUser.email === dispute.plaintiffEmail) dispute.plaintiffVerified = true;
-        else if (currentUser.email === dispute.respondentEmail) dispute.respondentVerified = true;
+        if (emailMatch(currentUser.email, dispute.plaintiffEmail) || currentUser.id === dispute.creatorId) dispute.plaintiffVerified = true;
+        else if (emailMatch(currentUser.email, dispute.respondentEmail)) dispute.respondentVerified = true;
         else return res.status(403).json({ error: 'Not a party' });
 
         await dispute.save();
@@ -741,8 +800,8 @@ export const signAgreement = async (req, res) => {
         const currentUser = await User.findByPk(req.user.id);
         if (!req.file) return res.status(400).json({ error: 'Signature image required' });
 
-        const role = currentUser.email === dispute.plaintiffEmail ? 'plaintiff' :
-            currentUser.email === dispute.respondentEmail ? 'defendant' : null;
+        const role = (emailMatch(currentUser.email, dispute.plaintiffEmail) || currentUser.id === dispute.creatorId) ? 'plaintiff' :
+            emailMatch(currentUser.email, dispute.respondentEmail) ? 'defendant' : null;
 
         if (role === 'plaintiff') dispute.plaintiffSignature = req.file.path || req.file.filename;
         else if (role === 'defendant') dispute.respondentSignature = req.file.path || req.file.filename;
@@ -899,8 +958,9 @@ export const getHistory = async (req, res) => {
         const currentUser = await User.findByPk(req.user.id);
 
         // Only allow parties or admin to view case history
-        const isParty = currentUser.email === dispute.plaintiffEmail ||
-            currentUser.email === dispute.respondentEmail;
+        const isParty = emailMatch(currentUser.email, dispute.plaintiffEmail) ||
+            emailMatch(currentUser.email, dispute.respondentEmail) ||
+            currentUser.id === dispute.creatorId;
         const isAdmin = req.user.role === 'Admin';
 
         if (!isParty && !isAdmin) {

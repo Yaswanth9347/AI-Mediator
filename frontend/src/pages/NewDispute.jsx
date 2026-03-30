@@ -13,7 +13,7 @@ export default function NewDispute() {
 
     // Plaintiff Details
     const [plaintiffName, setPlaintiffName] = useState('');
-    const [plaintiffEmail, setPlaintiffEmail] = useState('');
+    const [plaintiffEmail, setPlaintiffEmail] = useState(localStorage.getItem('userEmail') || '');
     const [plaintiffPhone, setPlaintiffPhone] = useState('');
     const [plaintiffAddress, setPlaintiffAddress] = useState('');
     const [plaintiffOccupation, setPlaintiffOccupation] = useState('');

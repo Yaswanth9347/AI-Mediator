@@ -121,7 +121,7 @@ export async function generateCaseSummaryPDF(dispute, messages = [], evidence = 
                 try {
                     const solutions = JSON.parse(dispute.aiSolutions);
                     solutions.forEach((solution, index) => {
-                        const isChosen = dispute.plaintiffChoice === index || dispute.respondentChoice === index;
+                        const isChosen = dispute.plaintiffChoice === index || dispute.defendantChoice === index;
                         addSubHeader(`Option ${index + 1}: ${solution.title}${isChosen ? ' ✓ (Selected)' : ''}`);
                         addNormalText(solution.description);
 
@@ -196,7 +196,7 @@ export async function generateCaseSummaryPDF(dispute, messages = [], evidence = 
             addBulletPoint('Complainant Confirmed Details', dispute.plaintiffConfirmed ? 'Yes' : 'No');
             addBulletPoint('Respondent Confirmed Details', dispute.respondentConfirmed ? 'Yes' : 'No');
             addBulletPoint('Complainant Choice', dispute.plaintiffChoice !== null ? `Option ${dispute.plaintiffChoice + 1}` : 'Pending');
-            addBulletPoint('Respondent Choice', dispute.respondentChoice !== null ? `Option ${dispute.respondentChoice + 1}` : 'Pending');
+            addBulletPoint('Respondent Choice', dispute.defendantChoice !== null ? `Option ${dispute.defendantChoice + 1}` : 'Pending');
             addBulletPoint('Complainant Signed', dispute.plaintiffSignature ? 'Yes' : 'No');
             addBulletPoint('Respondent Signed', dispute.respondentSignature ? 'Yes' : 'No');
 

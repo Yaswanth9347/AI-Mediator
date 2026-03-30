@@ -172,8 +172,9 @@ export default function DisputeDetail() {
     const [currentUserIdResolved, setCurrentUserIdResolved] = useState(localStorage.getItem('userId')); // resolved from profile for reliable alignment
     const role = localStorage.getItem('role');
     const isAdmin = role === 'Admin';
-    const isPlaintiff = dispute?.plaintiffEmail === currentUserEmail;
-    const isDefendant = dispute?.respondentEmail === currentUserEmail;
+    const isPlaintiff = (dispute?.plaintiffEmail?.toLowerCase() === currentUserEmail?.toLowerCase()) ||
+        (currentUserIdResolved && dispute?.creatorId && String(dispute.creatorId) === String(currentUserIdResolved));
+    const isDefendant = dispute?.respondentEmail?.toLowerCase() === currentUserEmail?.toLowerCase();
 
     // Fetch Dispute Data
     const fetchData = async (loadMore = false) => {
@@ -809,9 +810,10 @@ export default function DisputeDetail() {
         );
     }
 
-    const myChoice = isPlaintiff ? dispute.plaintiffChoice : isDefendant ? dispute.defendantChoice : null;
+    const myChoice = isAdmin ? null : isDefendant ? dispute.defendantChoice : dispute.plaintiffChoice;
     // Admins can view but cannot participate in case discussions
-    const canParticipate = isPlaintiff || (isDefendant && dispute.respondentAccepted);
+    // Any non-admin user who can access this page is a verified participant (backend enforces this)
+    const canParticipate = !isAdmin && dispute.respondentAccepted;
 
     return (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -906,7 +908,7 @@ export default function DisputeDetail() {
                             dispute={dispute} 
                             onAccepted={() => {
                                 // Refresh dispute data
-                                fetchDispute();
+                                fetchData();
                             }} 
                         />
                     </div>
@@ -1000,7 +1002,7 @@ export default function DisputeDetail() {
                                         <p className="text-blue-300 break-words">✓ Plaintiff: {solution.benefitsPlaintiff}</p>
                                         <p className="text-blue-300 break-words">✓ Defendant: {solution.benefitsDefendant}</p>
                                     </div>
-                                    {dispute.status === 'AwaitingDecision' && (isPlaintiff || isDefendant) && myChoice === null && (
+                                    {dispute.status === 'AwaitingDecision' && !isAdmin && myChoice === null && (
                                         <button onClick={() => handleDecision(idx)} className="w-full mt-2 py-2 px-3 bg-blue-950/50 text-blue-200 rounded-md text-xs sm:text-sm font-medium hover:bg-blue-900/50 border border-blue-700 transition-colors">
                                             Vote for Option {idx + 1}
                                         </button>
@@ -1014,7 +1016,7 @@ export default function DisputeDetail() {
                         </div>
 
                         {/* Request Reanalysis Button */}
-                        {dispute.status === 'AwaitingDecision' && (isPlaintiff || isDefendant) && (dispute.reanalysisCount || 0) < 2 && (
+                        {dispute.status === 'AwaitingDecision' && !isAdmin && (dispute.reanalysisCount || 0) < 2 && (
                             <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-slate-800/50 rounded-lg border border-blue-800">
                                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                                     <div className="flex-1">
@@ -1047,7 +1049,7 @@ export default function DisputeDetail() {
                         )}
 
                         {/* Decision Footer */}
-                        {dispute.status === 'AwaitingDecision' && (isPlaintiff || isDefendant) && (
+                        {dispute.status === 'AwaitingDecision' && !isAdmin && (
                             <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-blue-800">
                                 <h4 className="font-semibold text-blue-100 mb-2">Status</h4>
                                 {myChoice === null ? (
@@ -1070,7 +1072,7 @@ export default function DisputeDetail() {
             </div>
 
             {/* Waiting for Respondent Acceptance - Show to Plaintiff */}
-            {!dispute.respondentAccepted && !dispute.forwardedToCourt && isPlaintiff && (
+            {!dispute.respondentAccepted && !dispute.forwardedToCourt && !isAdmin && !isDefendant && (
                 <div className="mt-6 mb-6 p-6 bg-yellow-900/20 border-2 border-yellow-600/40 rounded-lg">
                     <div className="flex items-start gap-3">
                         <Clock className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" />
@@ -1102,7 +1104,7 @@ export default function DisputeDetail() {
             )}
 
             {/* Chat Section - Only accessible after respondent accepts */}
-            {(dispute.respondentAccepted || isPlaintiff || isAdmin) && !dispute.forwardedToCourt && (
+            {(dispute.respondentAccepted || isAdmin) && !dispute.forwardedToCourt && (
                 <div className="bg-slate-900/50 border border-blue-800 rounded-lg overflow-hidden h-[500px] md:h-[700px] flex flex-col">
                     <div className="px-3 sm:px-4 py-2 sm:py-3 bg-slate-900/70 border-b border-blue-800 flex items-center justify-between shrink-0">
                         <div className="flex items-center">
@@ -1510,8 +1512,8 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
 
 
     // Determine current user's role status
-    const verified = isPlaintiff ? dispute.plaintiffVerified : isDefendant ? dispute.respondentVerified : true;
-    const signed = isPlaintiff ? dispute.plaintiffSignature : isDefendant ? dispute.respondentSignature : true;
+    const verified = isDefendant ? dispute.respondentVerified : dispute.plaintiffVerified;
+    const signed = isDefendant ? dispute.respondentSignature : dispute.plaintiffSignature;
 
     // Admin View
     if (isAdmin) {
@@ -1595,22 +1597,21 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
         );
     }
 
-    // User View
-    if (!isPlaintiff && !isDefendant && !isAdmin) return null; // Bystander
+    // Non-participants should not see this (but shouldn't reach here since parent already filters)
 
     // Select details based on role
-    const myDetails = isPlaintiff ? {
-        name: dispute.plaintiffName,
-        email: dispute.plaintiffEmail,
-        phone: dispute.plaintiffPhone,
-        address: dispute.plaintiffAddress,
-        occupation: dispute.plaintiffOccupation
-    } : {
+    const myDetails = isDefendant ? {
         name: dispute.respondentName,
         email: dispute.respondentEmail,
         phone: dispute.respondentPhone,
         address: dispute.respondentAddress,
         occupation: dispute.respondentOccupation
+    } : {
+        name: dispute.plaintiffName,
+        email: dispute.plaintiffEmail,
+        phone: dispute.plaintiffPhone,
+        address: dispute.plaintiffAddress,
+        occupation: dispute.plaintiffOccupation
     };
 
     const confirmDetails = async () => {
@@ -1640,12 +1641,7 @@ function ResolutionSection({ dispute, isPlaintiff, isDefendant, isAdmin, onUpdat
 
     return (
         <div className="bg-slate-800/50 p-6 rounded-lg border border-blue-800 mb-6">
-            <ResolutionProgress
-                steps={steps}
-                currentStep={currentStep}
-                isCompact={isCompact}
-                onToggleExpand={handleToggleExpand}
-            />
+
 
             <div className="space-y-8 mt-6">
                 {/* Step 1: Verification */}

@@ -110,17 +110,24 @@ export default function Dashboard() {
         };
     }, [socket]);
 
-    // Filter disputes based on view mode
+    // Filter disputes based on view mode (case-insensitive email matching)
+    // Note: Backend already filters to only return disputes where the user is
+    // a participant (via creatorId, plaintiffEmail, or respondentEmail).
+    // The 'all' tab trusts the backend and shows everything returned.
     const filteredDisputes = disputes.filter(d => {
         if (userRole === 'Admin') return true;
 
+        const emailLower = (currentUserEmail || '').toLowerCase();
+        const pEmail = (d.plaintiffEmail || '').toLowerCase();
+        const rEmail = (d.respondentEmail || '').toLowerCase();
+
         if (viewMode === 'my_cases') {
-            return d.plaintiffEmail === currentUserEmail;
+            return pEmail === emailLower;
         } else if (viewMode === 'against_me') {
-            return d.respondentEmail === currentUserEmail;
+            return rEmail === emailLower;
         }
-        // 'all' - show disputes where user is either party
-        return d.plaintiffEmail === currentUserEmail || d.respondentEmail === currentUserEmail;
+        // 'all' - show all disputes returned by backend (already filtered server-side)
+        return true;
     });
 
     const getStatusBadge = (dispute) => {

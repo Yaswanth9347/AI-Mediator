@@ -147,8 +147,8 @@ runMigrations().then(async () => {
     // We still call sync() without arguments to ensure Sequelize knows about the models,
     // but it won't alter tables if they exist.
     // Actually, sync() creates tables if they don't exist, which is fine for fresh installs.
-    // But we removed `alter: true`.
-    await sequelize.sync();
+    // Changing to { alter: true } temporarily to fix missing columns in development.
+    await sequelize.sync({ alter: true });
 
     await AuditLog.sync();
     await Notification.sync();
